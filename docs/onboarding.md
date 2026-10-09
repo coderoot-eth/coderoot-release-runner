@@ -19,7 +19,11 @@ Before: CodeRoot creates the customer's GitHub environment, named exactly the cu
 
 The customer's maintainer confirms that a publish with one of their old tokens is refused. CodeRoot never holds a customer token, so it cannot run this check itself.
 
-## Open until the npm checks
-- Whether a wrong-environment run is refused (isolation).
-- Whether "disallow tokens" refuses a fresh granular token on this setup.
-- How staged versions show provenance, if at all.
+## Confirmed by the npm checks
+- A run from another customer's environment, from a non-main branch, or with no environment cannot publish.
+- Trusted publishing works with "Require 2FA and disallow tokens" set.
+- A stage-only package refuses a direct publish; staging signs a provenance statement.
+
+## Open until the remaining npm checks
+- Whether "disallow tokens" refuses an old granular token on this setup.
+- Whether the approved staged version carries the attestation.

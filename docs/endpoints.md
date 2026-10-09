@@ -39,6 +39,8 @@ The gate verifies the JWT signature against `https://token.actions.githubusercon
 | `run_id`, `run_attempt` | equal `claimed_run_id`, `claimed_run_attempt` (after §2) | all except claim |
 | `environment` | equals the release's `org_id` | artifact; state for `running` and `published` |
 
+Measured on a token issued to a job running a top-level workflow in an environment: it carries both `workflow_ref` and `job_workflow_ref`, with the same value, and `run_attempt` and `actor_id` are strings (`"1"`). The gate compares them as strings.
+
 Failures: `401 runner_token_invalid` (signature, expiry, issuer, audience) or `403 runner_claim_mismatch` (any claim rule), with `detail.claim` naming the first failed claim. Never echo the token.
 
 ## 2. Claim
@@ -64,20 +66,47 @@ Errors: `404 release_not_found`; `409 release_claimed` (`detail.run_id_claimed` 
   "org_id": "org_example",
   "state": "approved",
   "publish": { "state": "dispatched", "runner_run_id": "18234567890" },
-  "package_identity": "npm:@example/package@0.1.0",
-  "hashes": ["sha256:<64 hex>", "sha512:<128 hex>"],
   "record": {
-    "payload": "<RFC 8785 canonical JSON, as signed, base64>",
-    "signature": "0x<65-byte secp256k1 r||s||v>",
-    "signer": "0x8a1f3c5e7b9d0246a8c0e2f4b6d8a0c2e4f6b8d0",
-    "signer_role": "Admin",
-    "digest_alg": "sha256"
+    "envelope": "<base64 of the signed envelope's exact RFC 8785 UTF-8 bytes>",
+    "signature": "0x<65-byte secp256k1 r||s||v>"
   }
 }
 ```
-`package_identity` is `npm:<name>@<version>`. Split at the last `@`: the name may be scoped and start with `@`. The version is an exact semver version, never a range or tag.
 
-The runner recomputes SHA-256 over the decoded `payload`, recovers the signer from `signature`, requires it to equal `signer`, and checks `signer` against `signers.json` ([spec.md](spec.md) §6) and §6 below. Fields the runner acts on (`org_id`, `package_identity`, `hashes`, `signed_at`) are read **from the verified payload**, not from the unsigned wrapper; the wrapper copies exist for logging only and must match.
+The signed envelope, decoded:
+```json
+{ "format": "coderoot-signed-release-record-v1",
+  "payload": {
+    "approved_at_ms": 1791028800000,
+    "approver_role": "Admin",
+    "artifact": { "name": "@example/package", "registry": "npm",
+                  "sha256": "sha256:<64 hex>", "sha512": "sha512:<128 hex>",
+                  "size_bytes": 279, "version": "0.1.0" },
+    "commitment_key_version": 1,
+    "entry_id": "rec_…",
+    "format": "coderoot-release-record-v1",
+    "policy": { "grade": "human-required", "sha256": null },
+    "release_id": "rel_01J7B3C9V2N4P6R8T0W1X3Y5ZA",
+    "review_context_commitment": "0x<64 hex>",
+    "role_key_address": "0x8a1f3c5e7b9d0246a8c0e2f4b6d8a0c2e4f6b8d0",
+    "source_commit": "<40 hex>",
+    "submission_id": "sub_…" },
+  "record_commitment": "0x<64 hex>" }
+```
+
+The runner verifies, in order, and fails `record_invalid` on any step unless noted:
+1. Decode `envelope`. The bytes must be RFC 8785 canonical: re-serialising the parsed JSON gives the same bytes.
+2. `digest = SHA-256(envelope bytes)`. Recover the address from `signature` over the raw 32-byte digest (no Ethereum message prefix). It must equal `payload.role_key_address`.
+3. `format` is `coderoot-signed-release-record-v1` and `payload.format` is `coderoot-release-record-v1`.
+4. `payload.release_id` equals the `release_id` in the path.
+5. `payload.artifact.registry` is `npm`; `artifact.version` is an exact semver version, never a range or tag.
+6. Signer check ([spec.md](spec.md) §6 and §6 below), using `role_key_address`, `approver_role` and `approved_at_ms`. Failure: `signer_unknown`.
+
+Everything the runner acts on comes from the verified payload: `artifact.name`, `artifact.version`, `artifact.sha256`, `artifact.sha512`, `artifact.size_bytes`, `approved_at_ms`. The unsigned wrapper fields exist for logging only and must match.
+
+`record_commitment` is an HMAC-SHA256 of the payload under the org's commitment key. The runner cannot recompute it, since the key is secret; it is covered by the signature like the rest of the envelope.
+
+The payload carries no `org_id`. The runner needs a signed org to choose the environment and the signer list ([spec.md](spec.md) §17, V9).
 
 Errors: `404 release_not_found`; `403 runner_claim_mismatch`.
 
@@ -148,9 +177,9 @@ Gate rules:
 ```
 Addresses are lowercase hex. The window is `valid_from` ≤ t < `valid_to`; `valid_to: null` means open.
 
-`signed_at` is the approval time inside the signed payload, read only after the signature verifies (exact field name confirmed with the record test vectors). A payload without it fails `record_invalid`.
+`approved_at_ms` is the approval time inside the signed payload, in milliseconds since the epoch, read only after the signature verifies. A payload without it fails `record_invalid`.
 
-The runner accepts a record only if its signer appears here **and** in `signers.json` for the record's `org_id`, with the same role, that role may approve, and `signed_at` lies inside the window in both. Otherwise: `failed` / `signer_unknown`.
+The runner accepts a record only if its signer appears here **and** in `signers.json` for the record's `org_id`, with the same role, that role may approve, and `approved_at_ms` lies inside the window in both. Otherwise: `failed` / `signer_unknown`.
 
 ## 7. Reset (gate-internal, not a runner endpoint)
 The only way to retry a failed release. Allowed only if the release is still `approved` and the failure reason is `npm_error`, `runner_timeout`, `artifact_missing` or `package_missing`. Every other reason is final for the `release_id`; publishing needs a new submission and a new approval.

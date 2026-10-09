@@ -19,15 +19,16 @@ Out of scope: approval UI, attestation writing, revoke, evidence bundle, non-npm
 3. Job `resolve` (`contents: read`, `id-token: write`, **no environment**):
    - validate `release_id` format (`rel_` + 26-char ULID);
    - get a GitHub OIDC token for audience `secure.coderoot.app`; claim the release and fetch the record. If the claim is refused, the run exits without reporting: it is not bound to the release, and the release state is unchanged;
-   - verify the role-key signature; the signer must be in both signer lists for that org and role (§6), else `signer_unknown`;
+   - verify the signed record ([endpoints.md](endpoints.md) §3), else `record_invalid`; the signer must be in both signer lists for that org and role (§6), else `signer_unknown`;
    - refuse `record_state` unless state is `approved` and `publish.state` is not `published`;
-   - output the environment name, equal to the verified record's `org_id` (e.g. `org_example`), never from dispatch input.
+   - output the environment name, equal to the verified record's org (e.g. `org_example`; how the signed record carries the org is V9), never from dispatch input.
    The OIDC token in this job cannot publish: npm trust requires the customer environment, which this job does not have.
 4. Job `publish` (`environment: ${{ needs.resolve.outputs.env }}`, `contents: read`, `id-token: write`):
    - report `running`;
    - re-fetch and re-verify the record;
    - download the artifact; SHA-256 and SHA-512 must equal the record;
-   - read `name` and `version` from the tarball's `package.json`; must equal `package_identity` (`identity_mismatch`);
+   - the tarball's size must equal `artifact.size_bytes` (`hash_mismatch`);
+   - read `name` and `version` from the tarball's `package.json`; must equal the record's `artifact.name` and `artifact.version` (`identity_mismatch`);
    - refuse `publish_config` if the tarball's `package.json` has a `publishConfig` key other than `access`, `tag` or `provenance`. npm applies every `publishConfig` key not given on the command line, so a key such as `registry` would let the approved bytes redirect the publish;
    - check npm: package exists (`package_missing`); if the version is already published with the record's SHA-512, skip to the `published` report without publishing (G1); with other bytes, `integrity_mismatch` (G2);
    - re-read release state; stop if `revoked`;
@@ -78,7 +79,7 @@ Checking `ref` and `workflow_ref` closes the branch bypass on the gate side as w
 First call from a run. Binds `run_id` and `run_attempt` to the release if the release is `dispatched`, unclaimed and before `claim_deadline`, and `run_id` is not in `previous_run_ids`; idempotent for the same `run_id` and `run_attempt`. Any other run gets `409 release_claimed`, including a re-run of the bound run (same `run_id`, higher `run_attempt`) and a run from an earlier gate attempt. Claims after the deadline get `410 claim_expired`.
 
 ### 5.4 Record: `GET /v1/runner/releases/{release_id}`
-Returns the signed envelope (RFC 8785 payload + signature), `org_id`, `package_identity`, both hashes, release state, publish state. Bound run only.
+Returns the signed envelope (RFC 8785 bytes) and its secp256k1 signature, plus release state and publish state. Bound run only.
 
 ### 5.5 Artifact: `GET /v1/runner/releases/{release_id}/artifact`
 Streams the bytes from storage. Bound run only, `environment` claim required and matching. Only while state is `approved` and `publish.state` is `dispatched` or `running`.
@@ -94,10 +95,10 @@ Error format: the gate API error shape. Codes: [endpoints.md](endpoints.md) §9.
 
 ## 6. Signer verification
 Two independent sources must agree on every signer, so no single component can authorise one:
-- `signers.json` in the runner repo: per `org_id`, address, role, `valid_from`, `valid_to`. Changes only through a reviewed PR (two approvals, CODEOWNERS). Schema: [endpoints.md](endpoints.md) §6.
+- `signers.json` in the runner repo: per `org_id`, address, role, `valid_from`, `valid_to`. Changes only through a reviewed PR approved by both code owners, @PabloReyes and @rafaljanicki (`.github/CODEOWNERS`). Schema: [endpoints.md](endpoints.md) §6.
 - The gate's signer list (§5.7).
 
-The runner accepts a record only if the signer is in both for the record's `org_id`, with the same role, that role may approve, and the payload's `signed_at` lies inside the validity window in both. Anything else fails `signer_unknown`.
+The runner accepts a record only if the signer is in both for the record's `org_id`, with the same role, that role may approve, and the payload's `approved_at_ms` lies inside the validity window in both. Anything else fails `signer_unknown`.
 - Role-key addresses are already public as EAS attesters, so listing them adds no exposure.
 - Rotation: add the new key to both with `valid_from`; set `valid_to` on the old key in both. Records signed inside the old window stay valid.
 
@@ -109,8 +110,8 @@ The runner accepts a record only if the signer is in both for the record's `org_
 - With more than one customer, the environment is the isolation boundary.
 
 ## 8. Repo and workflow hardening
-Repo: public, branch protection on `main` (two reviews, CODEOWNERS on `.github/workflows/` and `signers.json`, no force push), minimal admins and writers.
-Workflow: dispatch trigger only; per-job permissions as in §3; actions pinned to commit SHAs; cache off; npm pinned to an exact version (proposed 12.2.0); no `setup-node` `registry-url`; no install, build or pack in either job; inputs only through `env`; job timeouts of 5 minutes for `resolve` and 15 minutes for `publish`, so a run ends before the gate's 30-minute stall timeout; GitHub-hosted runners only. Every call to the gate uses a freshly requested OIDC token.
+Repo: public, branch protection on `main` (two reviews, code-owner review on `.github/workflows/` and `signers.json`, no force push), minimal admins and writers. Code owners for both paths are @PabloReyes and @rafaljanicki, and both approvals are required. CODEOWNERS alone accepts any one owner's approval, so a required status check confirms that both have approved.
+Workflow: dispatch trigger only; per-job permissions as in §3; actions pinned to commit SHAs; cache off; npm pinned to an exact version (12.2.0, npm's current release); no `setup-node` `registry-url`; no install, build or pack in either job; inputs only through `env`; job timeouts of 5 minutes for `resolve` and 15 minutes for `publish`, so a run ends before the gate's 30-minute stall timeout; GitHub-hosted runners only. Every call to the gate uses a freshly requested OIDC token.
 
 ### 8.1 Public by design
 The repo is public, so anyone can read its run list, run logs, workflow inputs, environment names and `signers.json`. Rules:
@@ -195,7 +196,8 @@ Who builds is decided after this spec. Split by side:
 - [ ] Branch protection on `main`: two reviews, CODEOWNERS on `.github/workflows/` and `signers.json`, no force push
 - [ ] `release.yml`: `resolve` + `publish` jobs as §3, permissions per job, pinned actions, exact npm, no cache, no install/build/pack
 - [ ] `signers.json` per org, reviewed
-- [ ] Record verification: RFC 8785 payload, SHA-256, secp256k1 recovery, act only on verified payload
+- [ ] Record verification as [endpoints.md](endpoints.md) §3: canonical envelope bytes, SHA-256, secp256k1 recovery equal to `role_key_address`, act only on the verified payload
+- [ ] `.github/CODEOWNERS` and the required check that both owners approved
 - [ ] Artifact checks: both hashes, `package.json` identity, `publishConfig` allowlist, npm existence/version check, revoke re-check
 - [ ] Publish command with explicit `--registry` and `--ignore-scripts`; registry read with backoff
 - [ ] Log rules of §8.1
@@ -219,16 +221,18 @@ Who builds is decided after this spec. Split by side:
 - [ ] Onboarding §12
 
 ## 17. To confirm before final
-| # | Assumption | How | Waiting on |
-|---|---|---|---|
-| V1 | npm refuses a run from the wrong environment | npm check run 2 | environments + test packages |
-| V2 | A non-main branch run cannot publish | npm check runs 3–4 | same |
-| V3 | "Disallow tokens" refuses an old token while trusted publishing works | npm check run 5 | same |
-| V4 | Stage-only refuses direct publish; staged + 2FA approve works; provenance on staged versions | npm check runs 6–7 | same |
-| V5 | Record format matches gate owner's implementation, including the `signed_at` field | test vectors | gate owner |
-| V6 | Endpoints §5 and pinned signers §6 accepted | review | gate owner |
-| V7 | Where `latest` points after the placeholder publish | npm check run 1, `npm view <pkg> dist-tags` | test packages |
-| V8 | Gate submit and approval refuse a version already on npm (`version_exists`) | review | gate owner |
+| # | Assumption | Status |
+|---|---|---|
+| V1 | npm refuses a run from the wrong environment | Confirmed: a package trusting another environment refused the publish (`ENEEDAUTH`, no token from the exchange) |
+| V2 | A non-main branch run cannot publish | Confirmed: GitHub refused the branch run before its first step (environment branch rule); a run with no environment was refused by npm (`ENEEDAUTH`) |
+| V3 | "Disallow tokens" refuses an old token while trusted publishing works | Trusted publishing with "Require 2FA and disallow tokens" confirmed. Old-token refusal: open, npm check run 5 |
+| V4 | Stage-only refuses direct publish; staged + 2FA approve works; provenance on staged versions | Direct publish refused (`E403 OIDC permission denied for this action`). Staging works and npm signs the provenance statement at stage time. Open: approval with 2FA, and the attestation on the approved version |
+| V5 | Record format matches the gate's implementation | Fields and canonical bytes confirmed against an unsigned test vector ([endpoints.md](endpoints.md) §3). Open: a signed vector, for the signature check |
+| V6 | Endpoints §5 and pinned signers §6 accepted | Open: gate owner review |
+| V7 | Where `latest` points after the placeholder publish | Confirmed: a placeholder published with `--tag placeholder` also becomes `latest` |
+| V8 | Gate submit and approval refuse a version already on npm (`version_exists`) | Open: gate owner. This changes the gate's submit API contract, which needs the same addition |
+| V9 | The signed payload identifies the org | Open: the payload has no `org_id`. Either the gate adds `org_id` to the payload, or the runner takes the org from `role_key_address` through `signers.json`, which requires every address to belong to one org only. Gate owner decides |
+| V10 | A restricted (private) scoped package publishes through trusted publishing with provenance off | Open: npm check run 8. If it works, provenance is on for public packages and off for private ones (§9, G11); if not, private packages are out of v1 (§1) |
 
 ## 18. Sign-off
 Countersigned by: ____________ Date: ________

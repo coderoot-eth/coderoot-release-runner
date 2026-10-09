@@ -18,9 +18,9 @@ Out of scope: approval UI, attestation writing, revoke, evidence bundle, non-npm
 2. Gate dispatches `release.yml` on `main` through its GitHub App, with **one input: `release_id`**.
 3. Job `resolve` (`contents: read`, `id-token: write`, **no environment**):
    - validate `release_id` format (`rel_` + 26-char ULID);
-   - get a GitHub OIDC token for audience `secure.coderoot.app`; claim the release and fetch the record;
-   - verify the role-key signature; signer must be in the pinned list for that org and role;
-   - refuse unless state is `approved` and `publish.state` is not `published`;
+   - get a GitHub OIDC token for audience `secure.coderoot.app`; claim the release and fetch the record. If the claim is refused, the run exits without reporting: it is not bound to the release, and the release state is unchanged;
+   - verify the role-key signature; the signer must be in both signer lists for that org and role (§6), else `signer_unknown`;
+   - refuse `record_state` unless state is `approved` and `publish.state` is not `published`;
    - refuse `placeholder_version` if the version in `package_identity` matches `0.0.0-placeholder.*`, before any npm or artifact check;
    - output the environment name, equal to the verified record's `org_id` (e.g. `org_example`), never from dispatch input.
    The OIDC token in this job cannot publish: npm trust requires the customer environment, which this job does not have.
@@ -28,24 +28,25 @@ Out of scope: approval UI, attestation writing, revoke, evidence bundle, non-npm
    - report `running`;
    - re-fetch and re-verify the record;
    - download the artifact; SHA-256 and SHA-512 must equal the record;
-   - read `name` and `version` from the tarball's `package.json`; must equal `package_identity`;
-   - check npm: package exists; version not already published, or already published with the same integrity;
+   - read `name` and `version` from the tarball's `package.json`; must equal `package_identity` (`identity_mismatch`);
+   - refuse `publish_config` if the tarball's `package.json` has a `publishConfig` key other than `access`, `tag` or `provenance`. npm applies every `publishConfig` key not given on the command line, so a key such as `registry` would let the approved bytes redirect the publish;
+   - check npm: package exists (`package_missing`); if the version is already published with the record's SHA-512, skip to the `published` report without publishing (G1); with other bytes, `integrity_mismatch` (G2);
    - re-read release state; stop if `revoked`;
-   - `npm publish <tarball> --provenance --access public --tag <tag>` (tag rule: [failure-modes.md](failure-modes.md) G10), exact pinned npm;
-   - read the registry's `dist.integrity`; must equal the record's SHA-512;
+   - `npm publish <tarball> --registry https://registry.npmjs.org/ --provenance --access public --tag <tag> --ignore-scripts` (tag rule: [failure-modes.md](failure-modes.md) G10), exact pinned npm;
+   - read the registry's `dist.integrity` with backoff for up to 5 minutes, since a new version can take time to become visible: different from the record's SHA-512 → `integrity_mismatch`; still not visible → report `published` anyway and let the gate's own read decide (G16);
    - report `published` with `runner_run_id`, `registry_url`, `registry_integrity`, `provenance_uri`, `published_at`.
 5. Any failure: report `failed` with a reason code; nothing published; no bundle.
 
 ## 4. State and failure rules
-- States: `none` → `dispatched` → `running` → `published` | `failed`. `failed` → `dispatched` only by gate reset.
+- States: `none` → `dispatched` → `running` → `published` | `failed`. `failed` → `dispatched` only by gate reset. `failed` (`runner_timeout`) → `published` only when the gate's own npm read shows the record's SHA-512.
 - Gate ignores any runner update for a revoked release; a late update never undoes `revoked`.
-- Gate marks `failed` / `runner_timeout` if no claim arrives within 15 minutes of dispatch, after checking npm ([failure-modes.md](failure-modes.md) G1).
+- Gate marks `failed` / `runner_timeout` if no claim arrives within 15 minutes of dispatch, or no terminal state within 30 minutes of the claim, after checking npm ([failure-modes.md](failure-modes.md) G1).
 - Retry after `failed`: gate reset only ([endpoints.md](endpoints.md) §7), never a re-run of the old GitHub run. Retryable reasons: `npm_error`, `runner_timeout`, `artifact_missing`, `package_missing`. The gate checks npm first, then increments `attempt`, clears `claimed_run_id`, sets a new `claim_deadline`, sets `publish.state = dispatched` and dispatches again.
 - Every other reason is final for that `release_id`. Publishing needs a new submission and a new approval.
-- Concurrency: `concurrency: publish-<package>`, no cancel-in-progress.
+- Concurrency: on the `publish` job, `concurrency: publish-<org_id>` keyed from the `resolve` output, no cancel-in-progress. It orders a customer's releases; the claim already stops two runs of one release. The group name shows on the public run page, so it carries the `org_id`, never a package name.
 - Never wait on the chain.
 
-Reason codes: `record_invalid`, `signer_unknown`, `record_state`, `artifact_missing`, `hash_mismatch`, `identity_mismatch`, `version_exists`, `package_missing`, `placeholder_version`, `revoked`, `npm_error`, `integrity_mismatch`, `runner_timeout`.
+Reason codes: `record_invalid`, `signer_unknown`, `record_state`, `artifact_missing`, `hash_mismatch`, `identity_mismatch`, `publish_config`, `package_missing`, `placeholder_version`, `revoked`, `npm_error`, `integrity_mismatch`, `runner_timeout`.
 
 ## 5. Runner endpoints on the gate
 
@@ -67,8 +68,9 @@ Full contract with request/response examples and error codes: [endpoints.md](end
 | `job_workflow_ref` | `coderoot-eth/coderoot-release-runner/.github/workflows/release.yml@refs/heads/main` |
 | `ref` | `refs/heads/main` |
 | `event_name` | `workflow_dispatch` |
+| `actor_id` | the gate GitHub App's bot account, for the claim; a run dispatched by anyone else is not bound |
 | `run_id` | the run bound to this release |
-| `environment` | the release's `org_id`, for §5.5 and §5.6 (absent for `resolve`) |
+| `environment` | the release's `org_id`, for §5.5 and for `running` / `published` in §5.6 (absent for `resolve`) |
 
 Checking `ref` and `job_workflow_ref` closes the branch bypass on the gate side as well.
 
@@ -79,16 +81,16 @@ First call from a run. Binds `run_id` to the release if the release is `dispatch
 Returns the signed envelope (RFC 8785 payload + signature), `org_id`, `package_identity`, both hashes, release state, publish state. Bound run only.
 
 ### 5.5 Artifact: `GET /v1/runner/releases/{release_id}/artifact`
-Streams the bytes from storage. Bound run only, `environment` claim required and matching. Only while state is `approved` and publish is not `published`.
+Streams the bytes from storage. Bound run only, `environment` claim required and matching. Only while state is `approved` and `publish.state` is `dispatched` or `running`.
 
 ### 5.6 State: `POST /v1/runner/releases/{release_id}/state`
-Body: `{ state: running|published|failed, reason?, runner_run_id, registry_url?, registry_integrity?, provenance_uri?, published_at? }`. Bound run only.
-Gate rules: ignore if revoked; for `published`, re-read npm and require `dist.integrity` = record SHA-512 before storing.
+Body: `{ state: running|published|failed, reason?, runner_run_id, registry_url?, registry_integrity?, provenance_uri?, published_at? }`. Bound run only. `running` and `published` require the matching `environment` claim; `failed` is also accepted from `resolve`, which has none, so a refusal there is recorded.
+Gate rules: ignore if revoked; for `published`, read npm and require `dist.integrity` = record SHA-512 before storing; a version not yet visible gets `202` and a re-read with backoff ([endpoints.md](endpoints.md) §5).
 
 ### 5.7 Signing keys: `GET /v1/runner/signing-keys?org_id=`
 Lists authorised signer addresses with role, per org. Used as a cross-check only, see §6.
 
-Error format: the gate API error shape. Codes: `401 runner_token_invalid`, `403 runner_claim_mismatch`, `409 release_claimed`, `409 release_not_publishable`, `404 release_not_found`.
+Error format: the gate API error shape. Codes: [endpoints.md](endpoints.md) §9.
 
 ## 6. Signer verification
 Two independent sources must agree on every signer, so no single component can authorise one:
@@ -101,13 +103,22 @@ The runner accepts a record only if the signer is in both for the record's `org_
 
 ## 7. Customer isolation
 - One GitHub environment per customer, named exactly the customer's **`org_id`** (e.g. `org_example`). No prefix, no transformation; runner and gate compare it verbatim. Permanent, like the repo name.
+- `org_id` is an opaque identifier, never a customer name: environment names are public (§8.1).
 - Every environment: deployment branches `main` only, no secrets, no variables.
 - Each customer's package trusts only its own environment.
 - With more than one customer, the environment is the isolation boundary.
 
 ## 8. Repo and workflow hardening
 Repo: public, branch protection on `main` (two reviews, CODEOWNERS on `.github/workflows/` and `signers.json`, no force push), minimal admins and writers.
-Workflow: dispatch trigger only; per-job permissions as in §3; actions pinned to commit SHAs; cache off; npm pinned to an exact version (proposed 12.2.0); no `setup-node` `registry-url`; no install, build or pack in either job; inputs only through `env`; job timeouts; GitHub-hosted runners only.
+Workflow: dispatch trigger only; per-job permissions as in §3; actions pinned to commit SHAs; cache off; npm pinned to an exact version (proposed 12.2.0); no `setup-node` `registry-url`; no install, build or pack in either job; inputs only through `env`; job timeouts of 5 minutes for `resolve` and 15 minutes for `publish`, so a run ends before the gate's 30-minute stall timeout; GitHub-hosted runners only. Every call to the gate uses a freshly requested OIDC token.
+
+### 8.1 Public by design
+The repo is public, so anyone can read its run list, run logs, workflow inputs, environment names and `signers.json`. Rules:
+- Logs carry only `release_id`, `attempt`, reason codes and digests. Never the package name or version before `npm publish`, the record payload, gate responses, the tarball's contents, or a token.
+- Failure detail (expected and actual values) goes to the gate's state endpoint, not to the log.
+- No workflow artifacts and no job summaries with release data.
+- npm's own `npm publish` output is allowed: it runs only after every check has passed, for a version about to be public.
+- `signers.json` holds only opaque `org_id`s and role-key addresses, which are already public as EAS attesters.
 
 ## 9. Provenance
 On. The statement names `coderoot-eth/coderoot-release-runner` and `release.yml` as the build source. The customer's source repo and commit stay in the record and the bundle.
@@ -147,21 +158,28 @@ Trusted publishing needs the package to exist. The customer's maintainer creates
 | npm or GitHub outage | Fail closed; the gate reset starts with the npm check |
 | Run never starts or stalls | Gate timeout → `runner_timeout` after npm check |
 | Prerelease / lower version | Fixed tag rule, not chosen by the submitter |
+| New version not yet visible on npm | Runner and gate read with backoff; not visible is never `integrity_mismatch` |
+| `publishConfig` in the tarball | `publish_config`; the registry is always passed on the command line |
+| `published` report after `runner_timeout` | Accepted if the gate's npm read matches |
 
 ## 15. Tests (DoD)
 | Requirement | Test |
 |---|---|
 | Approved version on npm, hash matches | runner publish; registry `dist.integrity` = record SHA-512 |
 | Tampering refused | change one byte in storage after approval → `hash_mismatch` |
-| Unapproved release cannot trigger | `release_id` with no signed record → `record_invalid` |
+| Unapproved release cannot trigger | dispatch a `release_id` that is unknown or not `approved` → claim refused (`404` / `409 release_not_publishable`), run exits, nothing on npm; a record whose signature does not verify → `record_invalid` |
 | Agent holds no npm token | Action credential guard (exit 4); no npm secret in runner repo or environments |
 | Forged signer | signer not in `signers.json` → `signer_unknown` |
+| Signer only on the gate | signer in the gate list but not in `signers.json` → `signer_unknown` |
+| `publishConfig` redirect | tarball with `publishConfig.registry` → `publish_config`, nothing published anywhere |
+| Registry lag | `published` report before the version is visible → gate keeps `running`, then stores `published` |
+| Dispatch by a repo writer | run not dispatched by the gate's App → claim refused `403 runner_claim_mismatch` |
 | Identity mismatch | tarball `package.json` version differs → `identity_mismatch` |
 | Customer isolation | run in org A's environment cannot publish an org B package |
 | Placeholder refused | record for `0.0.0-placeholder.0` → `placeholder_version`, no integrity alert |
 | Retry | reset after `npm_error`: new run claims; re-run of the old run → `409 release_claimed` |
 | Branch bypass | non-main branch run refused by GitHub and by the gate |
-| Revoke | revoke after dispatch → `revoked` |
+| Revoke | revoke after dispatch: before the claim → claim refused; after it → run stops `revoked` before publish. Release stays `revoked`, nothing on npm |
 | Old token | publish with an old npm token refused |
 | Second run | `409 release_claimed` |
 Attack cases for attack test suite: [attack-tests.md](attack-tests.md).
@@ -174,7 +192,9 @@ Who builds is decided after this spec. Split by side:
 - [ ] `release.yml`: `resolve` + `publish` jobs as §3, permissions per job, pinned actions, exact npm, no cache, no install/build/pack
 - [ ] `signers.json` per org, reviewed
 - [ ] Record verification: RFC 8785 payload, SHA-256, secp256k1 recovery, act only on verified payload
-- [ ] Artifact checks: both hashes, `package.json` identity, npm existence/version check, revoke re-check
+- [ ] Artifact checks: both hashes, `package.json` identity, `publishConfig` allowlist, npm existence/version check, revoke re-check
+- [ ] Publish command with explicit `--registry` and `--ignore-scripts`; registry read with backoff
+- [ ] Log rules of §8.1
 - [ ] State reporting and reason codes
 - [ ] Tests from §15 that run without the gate (fixtures + throwaway packages)
 
@@ -183,7 +203,8 @@ Who builds is decided after this spec. Split by side:
 - [ ] Dispatch + dispatch record
 - [ ] OIDC verification with the claim table ([endpoints.md](endpoints.md) §1)
 - [ ] Endpoints: claim, record, artifact, state, signing-keys
-- [ ] State rules: transitions, revoked ignores updates, npm integrity re-check on `published`
+- [ ] State rules: transitions, revoked ignores updates, npm integrity re-check on `published` with backoff, late `published` after `runner_timeout`
+- [ ] `actor_id` check on claim
 - [ ] Reset for retryable reasons: npm check, `attempt`, `previous_run_ids`, new deadline
 - [ ] Timeout job and alerts to the operations alert channel
 
@@ -198,7 +219,7 @@ Who builds is decided after this spec. Split by side:
 | V2 | A non-main branch run cannot publish | npm check runs 3–4 | same |
 | V3 | "Disallow tokens" refuses an old token while trusted publishing works | npm check run 5 | same |
 | V4 | Stage-only refuses direct publish; staged + 2FA approve works; provenance on staged versions | npm check runs 6–7 | same |
-| V5 | Record format matches gate owner's implementation, including the `signed_at` field | test vectors | package owner |
+| V5 | Record format matches gate owner's implementation, including the `signed_at` field | test vectors | gate owner |
 | V6 | Endpoints §5 and pinned signers §6 accepted | review | gate owner |
 | V7 | Where `latest` points after the placeholder publish | npm check run 1, `npm view <pkg> dist-tags` | test packages |
 

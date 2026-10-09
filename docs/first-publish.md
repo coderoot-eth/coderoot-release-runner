@@ -4,7 +4,7 @@ npm trusted publishing can only be configured on a package that already exists.
 The first version of a brand-new package therefore cannot come from the runner. A person creates it, never the agent.
 
 Facts (npm CLI documentation):
-- `npm trust`: package must exist; caller needs write access and 2FA on the account; GATs with 2FA bypass are not accepted.
+- `npm trust`: package must exist; caller needs write access and 2FA on the account; granular access tokens with 2FA bypass are not accepted.
 - The registry supports one trust configuration per package. A new one requires revoking the old one.
 - Staged publishing also requires the package to exist, so stage-only does not solve this.
 
@@ -22,7 +22,7 @@ Applies only to brand-new packages. A customer onboarding an existing package sk
 
 1. Maintainer (human, own machine, 2FA) publishes `0.0.0-placeholder.0` with `--tag placeholder`. Content: README only. Scoped packages need `--access public`. As the only version, it may still land on `latest` (checked with `npm view <pkg> dist-tags` in npm check run 1). Steps 2 and 5 cover this: it is deprecated, and the first real release takes `latest` (failure-modes G10).
 2. Maintainer deprecates it: `npm deprecate <pkg>@0.0.0-placeholder.0 "Placeholder; releases ship through CodeRoot"`.
-3. Maintainer binds trust: `npm trust github <pkg> --repository coderoot-eth/coderoot-release-runner --file release.yml --environment <customer-env> --allow-publish` (or `--allow-stage-publish`, see stage-only decision).
+3. Maintainer binds trust: `npm trust github <pkg> --repository coderoot-eth/coderoot-release-runner --file release.yml --environment <org_id> --allow-publish` (or `--allow-stage-publish`, see stage-only decision).
 4. Maintainer sets publishing access to "Require 2FA and disallow tokens" and removes any tokens they created.
 5. First real version goes through the gate: submit, approve, runner publishes.
 

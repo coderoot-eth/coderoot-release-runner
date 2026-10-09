@@ -21,7 +21,7 @@ Gate then stores the dispatch record. The environment name is the `org_id`, verb
 ```
 
 ## 1. Authentication (every endpoint below)
-`Authorization: Bearer <GitHub Actions OIDC token>` requested with `audience=secure.coderoot.app`.
+`Authorization: Bearer <GitHub Actions OIDC token>` requested with `audience=secure.coderoot.app`. The runner requests a fresh token for every call; GitHub's tokens are short-lived.
 The gate verifies the JWT signature against `https://token.actions.githubusercontent.com/.well-known/jwks`, `exp`/`nbf` with ≤ 60 s skew, then the claims:
 
 | Claim | Rule | Endpoints |
@@ -33,8 +33,9 @@ The gate verifies the JWT signature against `https://token.actions.githubusercon
 | `job_workflow_ref` | `coderoot-eth/coderoot-release-runner/.github/workflows/release.yml@refs/heads/main` | all |
 | `ref` | `refs/heads/main` | all |
 | `event_name` | `workflow_dispatch` | all |
+| `actor_id` | equals the gate GitHub App's bot account id | claim |
 | `run_id` | equals `claimed_run_id` (after §2) | all except claim |
-| `environment` | equals the release's `org_id` | artifact, state |
+| `environment` | equals the release's `org_id` | artifact; state for `running` and `published` |
 
 Failures: `401 runner_token_invalid` (signature, expiry, issuer, audience) or `403 runner_claim_mismatch` (any claim rule), with `detail.claim` naming the first failed claim. Never echo the token.
 
@@ -72,6 +73,8 @@ Errors: `404 release_not_found`; `409 release_claimed` (`detail.run_id_claimed` 
   }
 }
 ```
+`package_identity` is `npm:<name>@<version>`. Split at the last `@`: the name may be scoped and start with `@`. The version is an exact semver version, never a range or tag.
+
 The runner recomputes SHA-256 over the decoded `payload`, recovers the signer from `signature`, requires it to equal `signer`, and checks `signer` against `signers.json` ([spec.md](spec.md) §6) and §6 below. Fields the runner acts on (`org_id`, `package_identity`, `hashes`, `signed_at`) are read **from the verified payload**, not from the unsigned wrapper; the wrapper copies exist for logging only and must match.
 
 Errors: `404 release_not_found`; `403 runner_claim_mismatch`.
@@ -107,10 +110,15 @@ Failed:
 ```
 
 Gate rules:
+- `failed` is accepted from the bound run with or without an `environment` claim, so the `resolve` job can report its refusals (`record_invalid`, `signer_unknown`, `record_state`, `placeholder_version`). If the claim is present it must equal the release's `org_id`.
 - Transitions allowed: `dispatched → running → published | failed`; `dispatched → failed`. Anything else `409 invalid_transition`.
 - `failed → dispatched` happens only through the gate reset (§7), never through this endpoint.
+- `failed` (`runner_timeout`) → `published` is accepted from the run that held the claim, if the gate's npm read below matches. A slow run that published after the timeout is recorded, not lost.
 - If the release is `revoked`: `200` with `{ "ignored": true, "state": "revoked" }`; nothing changes.
-- For `published`: the gate fetches the npm packument itself and requires `dist.integrity` = `registry_integrity` = record SHA-512; otherwise it stores `failed` / `integrity_mismatch` and alerts.
+- For `published`: the gate reads the version from npm itself.
+  - Present, `dist.integrity` = record SHA-512 (and = `registry_integrity` when sent): store `published`.
+  - Present with other integrity: store `failed` / `integrity_mismatch` and alert.
+  - Not visible yet: answer `202` with `{ "publish_state": "running", "registry_pending": true }`, keep `running` and re-read with backoff. If still not visible 30 minutes after the claim, the timeout rule (§8) applies.
 - Repeating the same body is harmless (`200`, same result).
 
 `200`
@@ -158,13 +166,13 @@ The only way to retry a failed release. Allowed only if the release is still `ap
 A run that never claimed in the earlier attempt may still claim the new one; it verifies the same signed record, and the claim lets only one run through.
 
 ## 8. Timeout (gate-internal)
-If no claim by `claim_deadline` (dispatch + 15 min) or no terminal state within 30 min of claim, the gate reads npm: version present with matching integrity → `published`; otherwise `failed` / `runner_timeout`, and alerts.
+If no claim by `claim_deadline` (dispatch + 15 min) or no terminal state within 30 min of claim, the gate reads npm: version present with matching integrity → `published`; present with other integrity → `failed` / `integrity_mismatch`; absent → `failed` / `runner_timeout`. Each `failed` alerts.
 
 ## 9. Error codes
 | HTTP | id | When |
 |---|---|---|
 | 401 | `runner_token_invalid` | bad signature, expired, wrong issuer or audience |
-| 403 | `runner_claim_mismatch` | any claim rule in §1 |
+| 403 | `runner_claim_mismatch` | any claim rule in §1, including a run not dispatched by the gate's App |
 | 404 | `release_not_found` | unknown `release_id` (also for other orgs) |
 | 409 | `release_claimed` | another run holds the release, or the run belongs to an earlier attempt |
 | 409 | `release_not_publishable` | state not `approved`, or already published/failed/revoked |

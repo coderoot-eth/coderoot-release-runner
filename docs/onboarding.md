@@ -15,8 +15,9 @@ Before: CodeRoot creates the customer's GitHub environment, named exactly the cu
 
 ## Checks CodeRoot runs after onboarding
 - `npm trust list <pkg>` shows exactly one configuration pointing at the runner and the right environment.
-- A publish attempt with an old token is refused.
-- For stage-only packages: a direct publish from the runner is refused.
+- For stage-only packages: `npm trust list <pkg>` shows stage permission only.
+
+The customer's maintainer confirms that a publish with one of their old tokens is refused. CodeRoot never holds a customer token, so it cannot run this check itself.
 
 ## Open until the npm checks
 - Whether a wrong-environment run is refused (isolation).

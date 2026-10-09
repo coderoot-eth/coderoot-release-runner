@@ -1,4 +1,4 @@
-# Runner endpoints on `secure.coderoot.app` 
+# Runner endpoints on `secure.coderoot.app`
 
 Draft for review. Same conventions as the gate API: JSON, UTF-8, tagged lowercase hashes, the gate API error shape, ULID ids.
 Base: `https://secure.coderoot.app/v1/runner`. All examples use `release_id = rel_01J7B3C9V2N4P6R8T0W1X3Y5ZA`.
@@ -12,12 +12,12 @@ POST https://api.github.com/repos/coderoot-eth/coderoot-release-runner/actions/w
 { "ref": "main", "inputs": { "release_id": "rel_01J7B3C9V2N4P6R8T0W1X3Y5ZA" } }
 ```
 
-Gate then stores the dispatch record:
+Gate then stores the dispatch record. The environment name is the `org_id`, verbatim:
 
 ```json
 { "release_id": "rel_01J7B3C9V2N4P6R8T0W1X3Y5ZA", "org_id": "org_example",
-  "environment": "org-example", "dispatched_at": "2026-10-09T10:00:00Z",
-  "claimed_run_id": null, "claim_deadline": "2026-10-09T10:15:00Z" }
+  "environment": "org_example", "attempt": 1, "dispatched_at": "2026-10-09T10:00:00Z",
+  "claimed_run_id": null, "previous_run_ids": [], "claim_deadline": "2026-10-09T10:15:00Z" }
 ```
 
 ## 1. Authentication (every endpoint below)
@@ -34,20 +34,20 @@ The gate verifies the JWT signature against `https://token.actions.githubusercon
 | `ref` | `refs/heads/main` | all |
 | `event_name` | `workflow_dispatch` | all |
 | `run_id` | equals `claimed_run_id` (after §2) | all except claim |
-| `environment` | equals the release's `org-<org_id>` | artifact, state |
+| `environment` | equals the release's `org_id` | artifact, state |
 
 Failures: `401 runner_token_invalid` (signature, expiry, issuer, audience) or `403 runner_claim_mismatch` (any claim rule), with `detail.claim` naming the first failed claim. Never echo the token.
 
 ## 2. Claim
 `POST /releases/{release_id}/claim` — first call of every run. Body: none.
 
-Rules: release must be `approved` with `publish.state = dispatched`, before `claim_deadline`.
-Binds `run_id` if unclaimed; idempotent for the same `run_id`.
+Rules: release must be `approved` with `publish.state = dispatched`, before `claim_deadline`, and the token's `run_id` must not be in `previous_run_ids`.
+Binds `run_id` if unclaimed; idempotent for the same `run_id`. A run from an earlier attempt, or a re-run of it (same `run_id`), gets `409 release_claimed`.
 
 `200`
 ```json
 { "release_id": "rel_01J7B3C9V2N4P6R8T0W1X3Y5ZA", "run_id": "18234567890",
-  "environment": "org-example", "claimed_at": "2026-10-09T10:00:41Z" }
+  "environment": "org_example", "attempt": 1, "claimed_at": "2026-10-09T10:00:41Z" }
 ```
 Errors: `404 release_not_found`; `409 release_claimed` (`detail.run_id_claimed` is not returned, only that it is taken); `409 release_not_publishable` (`detail.state`, `detail.publish_state`); `410 claim_expired`.
 
@@ -72,7 +72,7 @@ Errors: `404 release_not_found`; `409 release_claimed` (`detail.run_id_claimed` 
   }
 }
 ```
-The runner recomputes SHA-256 over the decoded `payload`, recovers the signer from `signature`, requires it to equal `signer`, and checks `signer` against `signers.json` ([spec.md](spec.md) §6) and §6 below. Fields the runner acts on (`org_id`, `package_identity`, `hashes`) are read **from the verified payload**, not from the unsigned wrapper; the wrapper copies exist for logging only and must match.
+The runner recomputes SHA-256 over the decoded `payload`, recovers the signer from `signature`, requires it to equal `signer`, and checks `signer` against `signers.json` ([spec.md](spec.md) §6) and §6 below. Fields the runner acts on (`org_id`, `package_identity`, `hashes`, `signed_at`) are read **from the verified payload**, not from the unsigned wrapper; the wrapper copies exist for logging only and must match.
 
 Errors: `404 release_not_found`; `403 runner_claim_mismatch`.
 
@@ -108,6 +108,7 @@ Failed:
 
 Gate rules:
 - Transitions allowed: `dispatched → running → published | failed`; `dispatched → failed`. Anything else `409 invalid_transition`.
+- `failed → dispatched` happens only through the gate reset (§7), never through this endpoint.
 - If the release is `revoked`: `200` with `{ "ignored": true, "state": "revoked" }`; nothing changes.
 - For `published`: the gate fetches the npm packument itself and requires `dist.integrity` = `registry_integrity` = record SHA-512; otherwise it stores `failed` / `integrity_mismatch` and alerts.
 - Repeating the same body is harmless (`200`, same result).
@@ -126,22 +127,50 @@ Gate rules:
   "signers": [ { "address": "0x8a1f3c5e7b9d0246a8c0e2f4b6d8a0c2e4f6b8d0", "role": "Admin", "valid_from": "2026-09-22T00:00:00Z", "valid_to": null } ],
   "as_of": "2026-10-09T10:00:41Z" }
 ```
-The runner accepts a record only if its signer appears here **and** in the repo's `signers.json` with a role allowed to approve, and `signed_at` falls inside `valid_from`/`valid_to`. Mismatch: `failed` / `signer_unknown`.
 
-## 7. Timeout (gate-internal)
+`signers.json` in the runner repo uses the same entry shape:
+```json
+{ "schema": 1,
+  "orgs": {
+    "org_example": [
+      { "address": "0x8a1f3c5e7b9d0246a8c0e2f4b6d8a0c2e4f6b8d0", "role": "Admin",
+        "valid_from": "2026-09-22T00:00:00Z", "valid_to": null } ] } }
+```
+Addresses are lowercase hex. The window is `valid_from` ≤ t < `valid_to`; `valid_to: null` means open.
+
+`signed_at` is the approval time inside the signed payload, read only after the signature verifies (exact field name confirmed with the record test vectors). A payload without it fails `record_invalid`.
+
+The runner accepts a record only if its signer appears here **and** in `signers.json` for the record's `org_id`, with the same role, that role may approve, and `signed_at` lies inside the window in both. Otherwise: `failed` / `signer_unknown`.
+
+## 7. Reset (gate-internal, not a runner endpoint)
+The only way to retry a failed release. Allowed only if the release is still `approved` and the failure reason is `npm_error`, `runner_timeout`, `artifact_missing` or `package_missing`. Every other reason is final for the `release_id`; publishing needs a new submission and a new approval.
+
+1. Read npm for the version. Present with `dist.integrity` = record SHA-512 → `published` (failure-modes G1). Present with other integrity → stays `failed` / `integrity_mismatch`, alert. Absent → continue.
+2. For `artifact_missing`: the bytes must be in storage again, otherwise stop.
+3. Update the dispatch record: append `claimed_run_id` (if any) to `previous_run_ids`, set `claimed_run_id: null`, `attempt + 1`, new `dispatched_at` and `claim_deadline`; set `publish.state = dispatched`.
+4. Dispatch again (§0).
+
+```json
+{ "release_id": "rel_01J7B3C9V2N4P6R8T0W1X3Y5ZA", "org_id": "org_example",
+  "environment": "org_example", "attempt": 2, "dispatched_at": "2026-10-09T11:00:00Z",
+  "claimed_run_id": null, "previous_run_ids": ["18234567890"], "claim_deadline": "2026-10-09T11:15:00Z" }
+```
+A run that never claimed in the earlier attempt may still claim the new one; it verifies the same signed record, and the claim lets only one run through.
+
+## 8. Timeout (gate-internal)
 If no claim by `claim_deadline` (dispatch + 15 min) or no terminal state within 30 min of claim, the gate reads npm: version present with matching integrity → `published`; otherwise `failed` / `runner_timeout`, and alerts.
 
-## 8. Error codes
+## 9. Error codes
 | HTTP | id | When |
 |---|---|---|
 | 401 | `runner_token_invalid` | bad signature, expired, wrong issuer or audience |
 | 403 | `runner_claim_mismatch` | any claim rule in §1 |
 | 404 | `release_not_found` | unknown `release_id` (also for other orgs) |
-| 409 | `release_claimed` | another run holds the release |
+| 409 | `release_claimed` | another run holds the release, or the run belongs to an earlier attempt |
 | 409 | `release_not_publishable` | state not `approved`, or already published/failed/revoked |
 | 409 | `invalid_transition` | state change not allowed |
 | 410 | `claim_expired` | claim after deadline |
 | 410 | `artifact_gone` | bytes no longer stored |
 
-## 9. Rate and size
+## 10. Rate and size
 One run per release at a time (claim). Artifact ≤ 64 MiB. Endpoints are not exposed to org sessions or `crs_` tokens; runner identity only.

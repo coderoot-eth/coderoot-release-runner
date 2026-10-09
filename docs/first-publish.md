@@ -1,8 +1,7 @@
 # First publish of a new package
 
-Problem: npm trusted publishing can only be configured on a package that already exists.
-So the very first version of a brand-new package cannot come from the runner. Someone must create it,
-and that someone must never be the agent.
+npm trusted publishing can only be configured on a package that already exists.
+The first version of a brand-new package therefore cannot come from the runner. A person creates it, never the agent.
 
 Facts (npm CLI documentation):
 - `npm trust`: package must exist; caller needs write access and 2FA on the account; GATs with 2FA bypass are not accepted.
@@ -21,19 +20,20 @@ Applies only to brand-new packages. A customer onboarding an existing package sk
 
 ## Recommendation: option 1
 
-1. Maintainer (human, own machine, 2FA) publishes `0.0.0-placeholder.0` with dist-tag `placeholder`, never `latest`, so nobody installs it by default. Content: README only. Scoped packages need `--access public`.
+1. Maintainer (human, own machine, 2FA) publishes `0.0.0-placeholder.0` with `--tag placeholder`. Content: README only. Scoped packages need `--access public`. As the only version, it may still land on `latest` (checked with `npm view <pkg> dist-tags` in npm check run 1). Steps 2 and 5 cover this: it is deprecated, and the first real release takes `latest` (failure-modes G10).
 2. Maintainer deprecates it: `npm deprecate <pkg>@0.0.0-placeholder.0 "Placeholder; releases ship through CodeRoot"`.
 3. Maintainer binds trust: `npm trust github <pkg> --repository coderoot-eth/coderoot-release-runner --file release.yml --environment <customer-env> --allow-publish` (or `--allow-stage-publish`, see stage-only decision).
 4. Maintainer sets publishing access to "Require 2FA and disallow tokens" and removes any tokens they created.
 5. First real version goes through the gate: submit, approve, runner publishes.
 
 Why: the agent never touches npm, the placeholder carries no code, and the first real version is gated like every later one.
-The placeholder reads `unregistered` in `verify`; that is correct and expected, and it is not on `latest`.
+The placeholder reads `unregistered` in `verify`; that is correct and expected. Until the first real release it may be `latest`: deprecated, README only.
 
 ## Spec requirements
-- Onboarding (D) lists these steps for new packages only.
+- [onboarding.md](onboarding.md) lists these steps for new packages only.
 - Runner refuses to publish if the package does not exist on npm (no implicit creation).
-- Runner refuses if the version to publish is the placeholder version.
+- Runner refuses the placeholder version with `placeholder_version` in the `resolve` job, before any npm or artifact check. Otherwise it would find the version on npm with different bytes and raise a false `integrity_mismatch` bypass alert.
 
 ## To confirm
 - On throwaway packages: placeholder published by hand, trust bound, then the runner publishes the next version.
+- `npm view <pkg> dist-tags` right after the placeholder publish: whether `latest` points at it.

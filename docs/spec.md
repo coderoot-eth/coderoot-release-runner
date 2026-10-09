@@ -40,9 +40,9 @@ Out of scope: approval UI, attestation writing, revoke, evidence bundle, non-npm
 - States: `none` → `dispatched` → `running` → `published` | `failed`. `failed` → `dispatched` only by gate reset. `failed` (`runner_timeout`) → `published` only when the gate's own npm read shows the record's SHA-512.
 - Gate ignores any runner update for a revoked release; a late update never undoes `revoked`.
 - Gate marks `failed` / `runner_timeout` if no claim arrives within 15 minutes of dispatch, or no terminal state within 30 minutes of the claim, after checking npm ([failure-modes.md](failure-modes.md) G1).
-- Retry after `failed`: gate reset only ([endpoints.md](endpoints.md) §7), never a re-run of the old GitHub run. Retryable reasons: `npm_error`, `runner_timeout`, `artifact_missing`, `package_missing`. The gate checks npm first, then increments `attempt`, clears `claimed_run_id`, sets a new `claim_deadline`, sets `publish.state = dispatched` and dispatches again.
+- Retry after `failed`: gate reset only ([endpoints.md](endpoints.md) §7), never a re-run of a GitHub run: the claim binds `run_id` and `run_attempt`, and a re-run increments `run_attempt`. Retryable reasons: `npm_error`, `runner_timeout`, `artifact_missing`, `package_missing`. The gate checks npm first, then increments `attempt`, clears `claimed_run_id`, sets a new `claim_deadline`, sets `publish.state = dispatched` and dispatches again.
 - Every other reason is final for that `release_id`. Publishing needs a new submission and a new approval.
-- Concurrency: on the `publish` job, `concurrency: publish-<org_id>` keyed from the `resolve` output, no cancel-in-progress. It orders a customer's releases; the claim already stops two runs of one release. The group name shows on the public run page, so it carries the `org_id`, never a package name.
+- Ordering: the gate dispatches a release only when no other release of the same package is `dispatched` or `running`; the rest wait in the gate's queue in approval order and are dispatched as each one ends. The claim already stops two runs of one release. The workflow sets no `concurrency` group: GitHub keeps one pending run per group and cancels an older pending run when a new one arrives, and a group name would show on the public run page.
 - Never wait on the chain.
 
 Reason codes: `record_invalid`, `signer_unknown`, `record_state`, `artifact_missing`, `hash_mismatch`, `identity_mismatch`, `publish_config`, `package_missing`, `revoked`, `npm_error`, `integrity_mismatch`, `runner_timeout`.
@@ -54,7 +54,7 @@ Full contract with request/response examples and error codes: [endpoints.md](end
 ### 5.1 Dispatch (gate → GitHub)
 - GitHub App installed on `coderoot-eth/coderoot-release-runner` only, permission `actions: write` only. Its key lives in the gate's key vault.
 - `workflow_dispatch` of `release.yml` on `ref: main` with `inputs: { release_id }`.
-- Gate stores a dispatch record: `release_id`, `attempt`, `dispatched_at`, `claim_deadline`, expected `org_id` and environment, `claimed_run_id: null`, `previous_run_ids`.
+- Gate stores a dispatch record: `release_id`, `attempt`, `dispatched_at`, `claim_deadline`, expected `org_id` and environment, `claimed_run_id: null`, `claimed_run_attempt: null`, `previous_run_ids`.
 - A dispatch alone cannot publish anything: the runner verifies the signed record itself.
 
 ### 5.2 Runner authentication (all runner → gate calls)
@@ -64,17 +64,18 @@ Full contract with request/response examples and error codes: [endpoints.md](end
 |---|---|
 | `iss` | `https://token.actions.githubusercontent.com` |
 | `repository` | `coderoot-eth/coderoot-release-runner` |
-| `job_workflow_ref` | `coderoot-eth/coderoot-release-runner/.github/workflows/release.yml@refs/heads/main` |
+| `workflow_ref` | `coderoot-eth/coderoot-release-runner/.github/workflows/release.yml@refs/heads/main` |
+| `job_workflow_ref` | equal to `workflow_ref`, so the job cannot run a reusable workflow from elsewhere |
 | `ref` | `refs/heads/main` |
 | `event_name` | `workflow_dispatch` |
 | `actor_id` | the gate GitHub App's bot account, for the claim; a run dispatched by anyone else is not bound |
-| `run_id` | the run bound to this release |
+| `run_id`, `run_attempt` | the run and attempt bound to this release |
 | `environment` | the release's `org_id`, for §5.5 and for `running` / `published` in §5.6 (absent for `resolve`) |
 
-Checking `ref` and `job_workflow_ref` closes the branch bypass on the gate side as well.
+Checking `ref` and `workflow_ref` closes the branch bypass on the gate side as well.
 
 ### 5.3 Claim: `POST /v1/runner/releases/{release_id}/claim`
-First call from a run. Binds `run_id` to the release if the release is `dispatched`, unclaimed and before `claim_deadline`, and `run_id` is not in `previous_run_ids`; idempotent for the same `run_id`. Any other run gets `409 release_claimed`, including a run from an earlier attempt or a re-run of it. Claims after the deadline get `410 claim_expired`.
+First call from a run. Binds `run_id` and `run_attempt` to the release if the release is `dispatched`, unclaimed and before `claim_deadline`, and `run_id` is not in `previous_run_ids`; idempotent for the same `run_id` and `run_attempt`. Any other run gets `409 release_claimed`, including a re-run of the bound run (same `run_id`, higher `run_attempt`) and a run from an earlier gate attempt. Claims after the deadline get `410 claim_expired`.
 
 ### 5.4 Record: `GET /v1/runner/releases/{release_id}`
 Returns the signed envelope (RFC 8785 payload + signature), `org_id`, `package_identity`, both hashes, release state, publish state. Bound run only.
@@ -152,6 +153,8 @@ Trusted publishing needs the package to exist. The customer's maintainer creates
 | Version already on npm at submit or approval | Gate refuses it (`version_exists`); never approved, never dispatched. Covers the placeholder whatever its version |
 | Version already on npm, different bytes, at publish | It appeared after approval: `integrity_mismatch`, alert: bypass signal |
 | Two runs for one release | Claim endpoint lets only one through |
+| Re-run of a claimed run | `run_attempt` differs: refused; retries go through the gate reset |
+| Several releases of one package | Gate queue dispatches one at a time |
 | Retry after failure | Gate reset, retryable reasons only, after the npm check; old run refused |
 | Revoke during publish | Re-check before publish; never undo `revoked`; npm version stays if already out |
 | npm or GitHub outage | Fail closed; the gate reset starts with the npm check |
@@ -177,6 +180,8 @@ Trusted publishing needs the package to exist. The customer's maintainer creates
 | Customer isolation | run in org A's environment cannot publish an org B package |
 | Version already on npm | submit a version that is already on npm, e.g. the placeholder → refused `version_exists` at submit; a version published between submit and approval → refused at approval. No dispatch, no integrity alert |
 | Retry | reset after `npm_error`: new run claims; re-run of the old run → `409 release_claimed` |
+| Re-run before failure is reported | bound run crashes, then is re-run from the Actions UI → `409 release_claimed` / `403 runner_claim_mismatch` (`run_attempt`); release waits for the gate timeout and a reset |
+| Ordering | approve two releases of one package → the second is dispatched only after the first ends |
 | Branch bypass | non-main branch run refused by GitHub and by the gate |
 | Revoke | revoke after dispatch: before the claim → claim refused; after it → run stops `revoked` before publish. Release stays `revoked`, nothing on npm |
 | Old token | publish with an old npm token refused |
@@ -203,7 +208,8 @@ Who builds is decided after this spec. Split by side:
 - [ ] OIDC verification with the claim table ([endpoints.md](endpoints.md) §1)
 - [ ] Endpoints: claim, record, artifact, state, signing-keys
 - [ ] State rules: transitions, revoked ignores updates, npm integrity re-check on `published` with backoff, late `published` after `runner_timeout`
-- [ ] `actor_id` check on claim
+- [ ] `actor_id` check on claim; claim binds `run_id` + `run_attempt`
+- [ ] Per-package dispatch queue in approval order
 - [ ] Submit and approval refuse a version already on npm (`version_exists`)
 - [ ] Reset for retryable reasons: npm check, `attempt`, `previous_run_ids`, new deadline
 - [ ] Timeout job and alerts to the operations alert channel

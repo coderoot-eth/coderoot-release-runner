@@ -17,7 +17,8 @@ Gate then stores the dispatch record. The environment name is the `org_id`, verb
 ```json
 { "release_id": "rel_01J7B3C9V2N4P6R8T0W1X3Y5ZA", "org_id": "org_example",
   "environment": "org_example", "attempt": 1, "dispatched_at": "2026-10-09T10:00:00Z",
-  "claimed_run_id": null, "previous_run_ids": [], "claim_deadline": "2026-10-09T10:15:00Z" }
+  "claimed_run_id": null, "claimed_run_attempt": null, "previous_run_ids": [],
+  "claim_deadline": "2026-10-09T10:15:00Z" }
 ```
 
 ## 1. Authentication (every endpoint below)
@@ -30,11 +31,12 @@ The gate verifies the JWT signature against `https://token.actions.githubusercon
 | `aud` | `secure.coderoot.app` | all |
 | `repository` | `coderoot-eth/coderoot-release-runner` | all |
 | `repository_id`, `repository_owner_id` | the values recorded when the repo was created (survive renames) | all |
-| `job_workflow_ref` | `coderoot-eth/coderoot-release-runner/.github/workflows/release.yml@refs/heads/main` | all |
+| `workflow_ref` | `coderoot-eth/coderoot-release-runner/.github/workflows/release.yml@refs/heads/main` | all |
+| `job_workflow_ref` | equals `workflow_ref` (a top-level workflow carries both, with the same value) | all |
 | `ref` | `refs/heads/main` | all |
 | `event_name` | `workflow_dispatch` | all |
 | `actor_id` | equals the gate GitHub App's bot account id | claim |
-| `run_id` | equals `claimed_run_id` (after §2) | all except claim |
+| `run_id`, `run_attempt` | equal `claimed_run_id`, `claimed_run_attempt` (after §2) | all except claim |
 | `environment` | equals the release's `org_id` | artifact; state for `running` and `published` |
 
 Failures: `401 runner_token_invalid` (signature, expiry, issuer, audience) or `403 runner_claim_mismatch` (any claim rule), with `detail.claim` naming the first failed claim. Never echo the token.
@@ -43,11 +45,11 @@ Failures: `401 runner_token_invalid` (signature, expiry, issuer, audience) or `4
 `POST /releases/{release_id}/claim` — first call of every run. Body: none.
 
 Rules: release must be `approved` with `publish.state = dispatched`, before `claim_deadline`, and the token's `run_id` must not be in `previous_run_ids`.
-Binds `run_id` if unclaimed; idempotent for the same `run_id`. A run from an earlier attempt, or a re-run of it (same `run_id`), gets `409 release_claimed`.
+Binds `run_id` and `run_attempt` if unclaimed; idempotent for the same pair. A re-run of the bound run keeps `run_id` but increments `run_attempt`, so it gets `409 release_claimed`, as does a run from an earlier gate attempt. Retries go through the gate reset (§7) only.
 
 `200`
 ```json
-{ "release_id": "rel_01J7B3C9V2N4P6R8T0W1X3Y5ZA", "run_id": "18234567890",
+{ "release_id": "rel_01J7B3C9V2N4P6R8T0W1X3Y5ZA", "run_id": "18234567890", "run_attempt": 1,
   "environment": "org_example", "attempt": 1, "claimed_at": "2026-10-09T10:00:41Z" }
 ```
 Errors: `404 release_not_found`; `409 release_claimed` (`detail.run_id_claimed` is not returned, only that it is taken); `409 release_not_publishable` (`detail.state`, `detail.publish_state`); `410 claim_expired`.
@@ -155,13 +157,14 @@ The only way to retry a failed release. Allowed only if the release is still `ap
 
 1. Read npm for the version. Present with `dist.integrity` = record SHA-512 → `published` (failure-modes G1). Present with other integrity → stays `failed` / `integrity_mismatch`, alert. Absent → continue.
 2. For `artifact_missing`: the bytes must be in storage again, otherwise stop.
-3. Update the dispatch record: append `claimed_run_id` (if any) to `previous_run_ids`, set `claimed_run_id: null`, `attempt + 1`, new `dispatched_at` and `claim_deadline`; set `publish.state = dispatched`.
-4. Dispatch again (§0).
+3. Update the dispatch record: append `claimed_run_id` (if any) to `previous_run_ids`, set `claimed_run_id` and `claimed_run_attempt` to `null`, `attempt + 1`, new `dispatched_at` and `claim_deadline`; set `publish.state = dispatched`.
+4. Dispatch again (§0), subject to the per-package queue ([spec.md](spec.md) §4).
 
 ```json
 { "release_id": "rel_01J7B3C9V2N4P6R8T0W1X3Y5ZA", "org_id": "org_example",
   "environment": "org_example", "attempt": 2, "dispatched_at": "2026-10-09T11:00:00Z",
-  "claimed_run_id": null, "previous_run_ids": ["18234567890"], "claim_deadline": "2026-10-09T11:15:00Z" }
+  "claimed_run_id": null, "claimed_run_attempt": null, "previous_run_ids": ["18234567890"],
+  "claim_deadline": "2026-10-09T11:15:00Z" }
 ```
 A run that never claimed in the earlier attempt may still claim the new one; it verifies the same signed record, and the claim lets only one run through.
 
@@ -174,7 +177,7 @@ If no claim by `claim_deadline` (dispatch + 15 min) or no terminal state within 
 | 401 | `runner_token_invalid` | bad signature, expired, wrong issuer or audience |
 | 403 | `runner_claim_mismatch` | any claim rule in §1, including a run not dispatched by the gate's App |
 | 404 | `release_not_found` | unknown `release_id` (also for other orgs) |
-| 409 | `release_claimed` | another run holds the release, or the run belongs to an earlier attempt |
+| 409 | `release_claimed` | another run holds the release, a re-run of the bound run (`run_attempt`), or a run from an earlier gate attempt |
 | 409 | `release_not_publishable` | state not `approved`, or already published/failed/revoked |
 | 409 | `invalid_transition` | state change not allowed |
 | 410 | `claim_expired` | claim after deadline |

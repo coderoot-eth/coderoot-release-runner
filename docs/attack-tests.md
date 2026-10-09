@@ -15,12 +15,13 @@ Each attack runs against a working runner. The result is recorded as pass or fai
 | AT-9 | Replay after revoke | Dispatch a revoked release | Claim refused (`409 release_not_publishable`), run exits; release stays `revoked`, nothing on npm |
 | AT-10 | Input injection | `release_id` containing shell metacharacters | Rejected by format check before any use |
 | AT-11 | Fake status | Post `published` to the gate without a run | Rejected: state endpoint accepts only the bound run with matching OIDC claims ([endpoints.md](endpoints.md)) |
-| AT-12 | Run from a branch claims a release | Push a branch, dispatch there, call the claim endpoint | Gate refuses: `ref` / `job_workflow_ref` not main ([endpoints.md](endpoints.md)) |
+| AT-12 | Run from a branch claims a release | Push a branch, dispatch there, call the claim endpoint | Gate refuses: `ref` / `workflow_ref` not main ([endpoints.md](endpoints.md)) |
 | AT-13 | Second run steals a release | Two runs claim the same `release_id` | Second gets `409 release_claimed` |
 | AT-14 | Approve an existing version | Submit the placeholder's version, or any version already on npm, in any format | Refused at submit (`version_exists`); if it appears on npm between submit and approval, refused at approval. Never dispatched, no integrity alert |
 | AT-15 | Re-run an old run | After a gate reset, re-run the failed run from the Actions UI | `409 release_claimed`; only the new attempt's run proceeds |
 | AT-16 | Gate serves a forged signer | Record signed by a key added to the gate's signer list but not to `signers.json` | `failed` / `signer_unknown`, nothing on npm |
 | AT-17 | Approved bytes redirect the publish | Approved tarball whose `package.json` sets `publishConfig.registry` to another registry | `failed` / `publish_config`; nothing published to either registry |
 | AT-18 | Repo writer dispatches the workflow | A writer dispatches `release.yml` on `main` for a `dispatched` release before the gate's run claims it | Claim refused `403 runner_claim_mismatch` (`actor_id`); the gate's own run proceeds |
+| AT-19 | Re-run a claimed run | Bound run fails before reporting; re-run it (all jobs, or failed jobs only) from the Actions UI | Refused on `run_attempt` (`409 release_claimed` at claim, `403 runner_claim_mismatch` elsewhere); nothing published; release recovers through timeout and reset |
 | — | Forge a bundle | — | Out of runner scope (evidence bundle) |
 | — | Revoke without authority | — | Out of runner scope (gate revoke API) |

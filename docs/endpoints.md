@@ -110,7 +110,7 @@ Failed:
 ```
 
 Gate rules:
-- `failed` is accepted from the bound run with or without an `environment` claim, so the `resolve` job can report its refusals (`record_invalid`, `signer_unknown`, `record_state`, `placeholder_version`). If the claim is present it must equal the release's `org_id`.
+- `failed` is accepted from the bound run with or without an `environment` claim, so the `resolve` job can report its refusals (`record_invalid`, `signer_unknown`, `record_state`). If the claim is present it must equal the release's `org_id`.
 - Transitions allowed: `dispatched → running → published | failed`; `dispatched → failed`. Anything else `409 invalid_transition`.
 - `failed → dispatched` happens only through the gate reset (§7), never through this endpoint.
 - `failed` (`runner_timeout`) → `published` is accepted from the run that held the claim, if the gate's npm read below matches. A slow run that published after the timeout is recorded, not lost.

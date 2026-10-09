@@ -20,8 +20,8 @@ Applies only to brand-new packages. A customer onboarding an existing package sk
 
 ## Recommendation: option 1
 
-1. Maintainer (human, own machine, 2FA) publishes `0.0.0-placeholder.0` with `--tag placeholder`. Content: README only. Scoped packages need `--access public`. As the only version, it may still land on `latest` (checked with `npm view <pkg> dist-tags` in npm check run 1). Steps 2 and 5 cover this: it is deprecated, and the first real release takes `latest` (failure-modes G10).
-2. Maintainer deprecates it: `npm deprecate <pkg>@0.0.0-placeholder.0 "Placeholder; releases ship through CodeRoot"`.
+1. Maintainer (human, own machine, 2FA) publishes a placeholder, recommended version `0.0.0-placeholder.0`, with `--tag placeholder`. Any version works: nothing depends on the format, and the first real release only has to use a different version. Content: README only. Scoped packages need `--access public`. As the only version, it may still land on `latest` (checked with `npm view <pkg> dist-tags` in npm check run 1). Steps 2 and 5 cover this: it is deprecated, and the first real release takes `latest` (failure-modes G10).
+2. Maintainer deprecates it: `npm deprecate <pkg>@<placeholder-version> "Placeholder; releases ship through CodeRoot"`.
 3. Maintainer binds trust: `npm trust github <pkg> --repository coderoot-eth/coderoot-release-runner --file release.yml --environment <org_id> --allow-publish` (or `--allow-stage-publish`, see stage-only decision).
 4. Maintainer sets publishing access to "Require 2FA and disallow tokens" and removes any tokens they created.
 5. First real version goes through the gate: submit, approve, runner publishes.
@@ -32,7 +32,7 @@ The placeholder reads `unregistered` in `verify`; that is correct and expected. 
 ## Spec requirements
 - [onboarding.md](onboarding.md) lists these steps for new packages only.
 - Runner refuses to publish if the package does not exist on npm (no implicit creation).
-- Runner refuses the placeholder version with `placeholder_version` in the `resolve` job, before any npm or artifact check. Otherwise it would find the version on npm with different bytes and raise a false `integrity_mismatch` bypass alert.
+- The gate refuses at submit and at approval any version already on npm (`version_exists`). This covers the placeholder whatever version the maintainer chose. Without it, an approved release reusing that version would reach the runner, find different bytes on npm and raise a false `integrity_mismatch` bypass alert.
 
 ## To confirm
 - On throwaway packages: placeholder published by hand, trust bound, then the runner publishes the next version.

@@ -21,7 +21,6 @@ Out of scope: approval UI, attestation writing, revoke, evidence bundle, non-npm
    - get a GitHub OIDC token for audience `secure.coderoot.app`; claim the release and fetch the record. If the claim is refused, the run exits without reporting: it is not bound to the release, and the release state is unchanged;
    - verify the role-key signature; the signer must be in both signer lists for that org and role (§6), else `signer_unknown`;
    - refuse `record_state` unless state is `approved` and `publish.state` is not `published`;
-   - refuse `placeholder_version` if the version in `package_identity` matches `0.0.0-placeholder.*`, before any npm or artifact check;
    - output the environment name, equal to the verified record's `org_id` (e.g. `org_example`), never from dispatch input.
    The OIDC token in this job cannot publish: npm trust requires the customer environment, which this job does not have.
 4. Job `publish` (`environment: ${{ needs.resolve.outputs.env }}`, `contents: read`, `id-token: write`):
@@ -46,7 +45,7 @@ Out of scope: approval UI, attestation writing, revoke, evidence bundle, non-npm
 - Concurrency: on the `publish` job, `concurrency: publish-<org_id>` keyed from the `resolve` output, no cancel-in-progress. It orders a customer's releases; the claim already stops two runs of one release. The group name shows on the public run page, so it carries the `org_id`, never a package name.
 - Never wait on the chain.
 
-Reason codes: `record_invalid`, `signer_unknown`, `record_state`, `artifact_missing`, `hash_mismatch`, `identity_mismatch`, `publish_config`, `package_missing`, `placeholder_version`, `revoked`, `npm_error`, `integrity_mismatch`, `runner_timeout`.
+Reason codes: `record_invalid`, `signer_unknown`, `record_state`, `artifact_missing`, `hash_mismatch`, `identity_mismatch`, `publish_config`, `package_missing`, `revoked`, `npm_error`, `integrity_mismatch`, `runner_timeout`.
 
 ## 5. Runner endpoints on the gate
 
@@ -144,16 +143,16 @@ GitHub-hosted runners: fresh VM per job, nothing persists. Self-hosted only if a
 CodeRoot side, before step 3: create environment `<org_id>` (main only), add the org's role-key addresses to `signers.json` by reviewed PR.
 
 ## 13. First publish of a new package (summary; detail in [first-publish.md](first-publish.md))
-Trusted publishing needs the package to exist. The customer's maintainer creates it with a README-only placeholder; the agent never touches npm. The runner refuses to create packages (`package_missing`) and refuses the placeholder version (`placeholder_version`) before any npm check. The placeholder may sit on `latest` until the first real release takes it.
+Trusted publishing needs the package to exist. The customer's maintainer creates it with a README-only placeholder; the agent never touches npm. The runner refuses to create packages (`package_missing`). The placeholder's version is whatever the maintainer chose, so nothing depends on its format: the gate refuses any submission whose version is already on npm (§14), which covers the placeholder. The placeholder may sit on `latest` until the first real release takes it.
 
 ## 14. Go-live failure modes (summary; detail in [failure-modes.md](failure-modes.md))
 | Case | Rule |
 |---|---|
 | Version already on npm, same bytes | Report `published`, no second publish |
-| Version already on npm, different bytes | `integrity_mismatch`, alert: bypass signal |
+| Version already on npm at submit or approval | Gate refuses it (`version_exists`); never approved, never dispatched. Covers the placeholder whatever its version |
+| Version already on npm, different bytes, at publish | It appeared after approval: `integrity_mismatch`, alert: bypass signal |
 | Two runs for one release | Claim endpoint lets only one through |
 | Retry after failure | Gate reset, retryable reasons only, after the npm check; old run refused |
-| Placeholder version in a record | `placeholder_version`, before any npm check |
 | Revoke during publish | Re-check before publish; never undo `revoked`; npm version stays if already out |
 | npm or GitHub outage | Fail closed; the gate reset starts with the npm check |
 | Run never starts or stalls | Gate timeout → `runner_timeout` after npm check |
@@ -176,7 +175,7 @@ Trusted publishing needs the package to exist. The customer's maintainer creates
 | Dispatch by a repo writer | run not dispatched by the gate's App → claim refused `403 runner_claim_mismatch` |
 | Identity mismatch | tarball `package.json` version differs → `identity_mismatch` |
 | Customer isolation | run in org A's environment cannot publish an org B package |
-| Placeholder refused | record for `0.0.0-placeholder.0` → `placeholder_version`, no integrity alert |
+| Version already on npm | submit a version that is already on npm, e.g. the placeholder → refused `version_exists` at submit; a version published between submit and approval → refused at approval. No dispatch, no integrity alert |
 | Retry | reset after `npm_error`: new run claims; re-run of the old run → `409 release_claimed` |
 | Branch bypass | non-main branch run refused by GitHub and by the gate |
 | Revoke | revoke after dispatch: before the claim → claim refused; after it → run stops `revoked` before publish. Release stays `revoked`, nothing on npm |
@@ -205,6 +204,7 @@ Who builds is decided after this spec. Split by side:
 - [ ] Endpoints: claim, record, artifact, state, signing-keys
 - [ ] State rules: transitions, revoked ignores updates, npm integrity re-check on `published` with backoff, late `published` after `runner_timeout`
 - [ ] `actor_id` check on claim
+- [ ] Submit and approval refuse a version already on npm (`version_exists`)
 - [ ] Reset for retryable reasons: npm check, `attempt`, `previous_run_ids`, new deadline
 - [ ] Timeout job and alerts to the operations alert channel
 
@@ -222,6 +222,7 @@ Who builds is decided after this spec. Split by side:
 | V5 | Record format matches gate owner's implementation, including the `signed_at` field | test vectors | gate owner |
 | V6 | Endpoints §5 and pinned signers §6 accepted | review | gate owner |
 | V7 | Where `latest` points after the placeholder publish | npm check run 1, `npm view <pkg> dist-tags` | test packages |
+| V8 | Gate submit and approval refuse a version already on npm (`version_exists`) | review | gate owner |
 
 ## 18. Sign-off
 Countersigned by: ____________ Date: ________

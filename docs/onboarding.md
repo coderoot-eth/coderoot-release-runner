@@ -22,8 +22,7 @@ The customer's maintainer confirms that a publish with one of their old tokens i
 ## Confirmed by the npm checks
 - A run from another customer's environment, from a non-main branch, or with no environment cannot publish.
 - Trusted publishing works with "Require 2FA and disallow tokens" set.
-- A stage-only package refuses a direct publish; staging signs a provenance statement.
+- A stage-only package refuses a direct publish; a staged version approved with 2FA is published with provenance, and npm records the approving maintainer.
 
 ## Open until the remaining npm checks
 - Whether "disallow tokens" refuses an old granular token on this setup.
-- Whether the approved staged version carries the attestation.

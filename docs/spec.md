@@ -21,7 +21,7 @@ Out of scope: approval UI, attestation writing, revoke, evidence bundle, non-npm
    - get a GitHub OIDC token for audience `secure.coderoot.app`; claim the release and fetch the record. If the claim is refused, the run exits without reporting: it is not bound to the release, and the release state is unchanged;
    - verify the signed record ([endpoints.md](endpoints.md) §3), else `record_invalid`; the signer must be in both signer lists for that org and role (§6), else `signer_unknown`;
    - refuse `record_state` unless state is `approved` and `publish.state` is not `published`;
-   - output the environment name, equal to the verified record's org (e.g. `org_example`; how the signed record carries the org is V9), never from dispatch input.
+   - output the environment name, equal to the verified payload's `org_id` (e.g. `org_example`), never from dispatch input.
    The OIDC token in this job cannot publish: npm trust requires the customer environment, which this job does not have.
 4. Job `publish` (`environment: ${{ needs.resolve.outputs.env }}`, `contents: read`, `id-token: write`):
    - report `running`;
@@ -226,12 +226,12 @@ Who builds is decided after this spec. Split by side:
 | V1 | npm refuses a run from the wrong environment | Confirmed: a package trusting another environment refused the publish (`ENEEDAUTH`, no token from the exchange) |
 | V2 | A non-main branch run cannot publish | Confirmed: GitHub refused the branch run before its first step (environment branch rule); a run with no environment was refused by npm (`ENEEDAUTH`) |
 | V3 | "Disallow tokens" refuses an old token while trusted publishing works | Trusted publishing with "Require 2FA and disallow tokens" confirmed. Old-token refusal: open, npm check run 5 |
-| V4 | Stage-only refuses direct publish; staged + 2FA approve works; provenance on staged versions | Direct publish refused (`E403 OIDC permission denied for this action`). Staging works and npm signs the provenance statement at stage time. Open: approval with 2FA, and the attestation on the approved version |
-| V5 | Record format matches the gate's implementation | Fields and canonical bytes confirmed against an unsigned test vector ([endpoints.md](endpoints.md) §3). Open: a signed vector, for the signature check |
+| V4 | Stage-only refuses direct publish; staged + 2FA approve works; provenance on staged versions | Confirmed: direct publish refused (`E403 OIDC permission denied for this action`); a staged version approved with 2FA is published by the trusted publisher with an SLSA provenance attestation, and npm records the approving maintainer (`_npmUser.approver`) |
+| V5 | Record format matches the gate's implementation | Fields and canonical bytes confirmed against an unsigned test vector ([endpoints.md](endpoints.md) §3). Open: a signed vector that includes `org_id`, for the signature check |
 | V6 | Endpoints §5 and pinned signers §6 accepted | Open: gate owner review |
 | V7 | Where `latest` points after the placeholder publish | Confirmed: a placeholder published with `--tag placeholder` also becomes `latest` |
 | V8 | Gate submit and approval refuse a version already on npm (`version_exists`) | Open: gate owner. This changes the gate's submit API contract, which needs the same addition |
-| V9 | The signed payload identifies the org | Open: the payload has no `org_id`. Either the gate adds `org_id` to the payload, or the runner takes the org from `role_key_address` through `signers.json`, which requires every address to belong to one org only. Gate owner decides |
+| V9 | The signed payload identifies the org | Confirmed by the gate owner: the payload carries `org_id`. Its exact form is checked with the signed vector (V5) |
 | V10 | A restricted (private) scoped package publishes through trusted publishing with provenance off | Open: npm check run 8. If it works, provenance is on for public packages and off for private ones (§9, G11); if not, private packages are out of v1 (§1) |
 
 ## 18. Sign-off

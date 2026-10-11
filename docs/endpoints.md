@@ -85,6 +85,7 @@ The signed envelope, decoded:
     "commitment_key_version": 1,
     "entry_id": "rec_…",
     "format": "coderoot-release-record-v1",
+    "org_id": "org_example",
     "policy": { "grade": "human-required", "sha256": null },
     "release_id": "rel_01J7B3C9V2N4P6R8T0W1X3Y5ZA",
     "review_context_commitment": "0x<64 hex>",
@@ -98,15 +99,13 @@ The runner verifies, in order, and fails `record_invalid` on any step unless not
 1. Decode `envelope`. The bytes must be RFC 8785 canonical: re-serialising the parsed JSON gives the same bytes.
 2. `digest = SHA-256(envelope bytes)`. Recover the address from `signature` over the raw 32-byte digest (no Ethereum message prefix). It must equal `payload.role_key_address`.
 3. `format` is `coderoot-signed-release-record-v1` and `payload.format` is `coderoot-release-record-v1`.
-4. `payload.release_id` equals the `release_id` in the path.
+4. `payload.release_id` equals the `release_id` in the path, and `payload.org_id` is present.
 5. `payload.artifact.registry` is `npm`; `artifact.version` is an exact semver version, never a range or tag.
 6. Signer check ([spec.md](spec.md) §6 and §6 below), using `role_key_address`, `approver_role` and `approved_at_ms`. Failure: `signer_unknown`.
 
-Everything the runner acts on comes from the verified payload: `artifact.name`, `artifact.version`, `artifact.sha256`, `artifact.sha512`, `artifact.size_bytes`, `approved_at_ms`. The unsigned wrapper fields exist for logging only and must match.
+Everything the runner acts on comes from the verified payload: `org_id` (which selects the environment and the signer list), `artifact.name`, `artifact.version`, `artifact.sha256`, `artifact.sha512`, `artifact.size_bytes`, `approved_at_ms`. The unsigned wrapper fields exist for logging only and must match.
 
 `record_commitment` is an HMAC-SHA256 of the payload under the org's commitment key. The runner cannot recompute it, since the key is secret; it is covered by the signature like the rest of the envelope.
-
-The payload carries no `org_id`. The runner needs a signed org to choose the environment and the signer list ([spec.md](spec.md) §17, V9).
 
 Errors: `404 release_not_found`; `403 runner_claim_mismatch`.
 

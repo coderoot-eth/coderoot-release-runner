@@ -127,7 +127,7 @@ On. The statement names `coderoot-eth/coderoot-release-runner` and `release.yml`
 ## 10. Stage-only option (decision: gate owner)
 npm can restrict trust to staging (`--allow-stage-publish`); the runner stages and a package maintainer approves with 2FA.
 Gain: a hijacked runner can stage but not ship. Cost: a human step per release by the customer's maintainer.
-Proposal: per-customer choice at onboarding, default direct publish; exactly one permission set.
+Proposal: per-customer choice at onboarding, default direct publish. npm also grants stage publish when `--allow-publish` is set, so a direct-publish package shows both permissions; a stage-only package is set with `--allow-stage-publish` alone and shows stage publish only. A stage-only package refuses a direct publish (V4).
 
 ## 11. Hosting
 GitHub-hosted runners: fresh VM per job, nothing persists. Self-hosted only if a customer objects to bytes passing through GitHub; then ephemeral and single-use. Not in v1.
@@ -135,7 +135,7 @@ GitHub-hosted runners: fresh VM per job, nothing persists. Self-hosted only if a
 ## 12. Customer onboarding (summary; detail in [onboarding.md](onboarding.md))
 1. New package only: maintainer publishes a README-only placeholder by hand with 2FA, dist-tag `placeholder`, deprecated ([first-publish.md](first-publish.md)).
 2. Check existing trust; npm allows one configuration per package, so the customer's own CI publisher is replaced.
-3. `npm trust github <pkg> --repository coderoot-eth/coderoot-release-runner --file release.yml --environment <org_id>` with exactly one of `--allow-publish` / `--allow-stage-publish`.
+3. `npm trust github <pkg> --repository coderoot-eth/coderoot-release-runner --file release.yml --environment <org_id>` with `--allow-publish` (direct publish) or `--allow-stage-publish` alone (stage only), see §10.
 4. Publishing access: "Require 2FA and disallow tokens".
 5. Revoke old npm tokens; remove npm credentials from the customer's CI.
 6. Review maintainers; all keep 2FA.
@@ -225,7 +225,7 @@ Who builds is decided after this spec. Split by side:
 |---|---|---|
 | V1 | npm refuses a run from the wrong environment | Confirmed: a package trusting another environment refused the publish (`ENEEDAUTH`, no token from the exchange) |
 | V2 | A non-main branch run cannot publish | Confirmed: GitHub refused the branch run before its first step (environment branch rule); a run with no environment was refused by npm (`ENEEDAUTH`) |
-| V3 | "Disallow tokens" refuses an old token while trusted publishing works | Trusted publishing with "Require 2FA and disallow tokens" confirmed. Old-token refusal: open, npm check run 5 |
+| V3 | "Disallow tokens" refuses an old token while trusted publishing works | Confirmed: with "Require 2FA and disallow tokens" set, trusted publishing works and a granular token with 2FA bypass is refused: `E403 Two-factor authentication is required to publish this package but an automation token was specified`. npm is also restricting 2FA-bypass tokens for direct publishing account-wide; the error names the package setting |
 | V4 | Stage-only refuses direct publish; staged + 2FA approve works; provenance on staged versions | Confirmed: direct publish refused (`E403 OIDC permission denied for this action`); a staged version approved with 2FA is published by the trusted publisher with an SLSA provenance attestation, and npm records the approving maintainer (`_npmUser.approver`) |
 | V5 | Record format matches the gate's implementation | Confirmed against a signed test vector from the gate: canonical envelope bytes, SHA-256 digest, secp256k1 recovery to `role_key_address`, `org_id` binding and the signer-list check all pass ([endpoints.md](endpoints.md) §3). A changed payload byte, a swapped `org_id`, a wrapper `org_id` that differs from the payload, and non-canonical bytes are each refused |
 | V6 | Endpoints §5 and pinned signers §6 accepted | Open: gate owner review |
@@ -233,6 +233,7 @@ Who builds is decided after this spec. Split by side:
 | V8 | Gate submit and approval refuse a version already on npm (`version_exists`) | Open: gate owner. This changes the gate's submit API contract, which needs the same addition |
 | V9 | The signed payload identifies the org | Confirmed: the payload carries `org_id`, checked with the signed vector (V5) |
 | V10 | A restricted (private) scoped package publishes through trusted publishing with provenance off | Publish confirmed: a restricted scoped package published from its trusted environment with `--access restricted` and no provenance. Open decision: an anonymous registry read of a restricted package returns 404, so the registry reads the flow depends on (version exists G1/G2, `package_missing`, the tag rule G10, the integrity read after publish G16, the gate's own npm check) need a read credential. Either private packages are out of v1 (§1), or the gate holds a read-only credential per customer for those reads |
+| V11 | Staging the first version of a new package creates it, so the hand-published placeholder can be dropped | Open. Observed: npm created a stub version `0.0.0-stage` (`"stub": true`, "Temporary package placeholder for staged publishing") under the maintainer's account when the test packages were set up ([first-publish.md](first-publish.md)) |
 
 ## 18. Sign-off
 Countersigned by: ____________ Date: ________

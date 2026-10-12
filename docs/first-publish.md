@@ -6,7 +6,7 @@ The first version of a brand-new package therefore cannot come from the runner. 
 Facts (npm CLI documentation):
 - `npm trust`: package must exist; caller needs write access and 2FA on the account; granular access tokens with 2FA bypass are not accepted.
 - The registry supports one trust configuration per package. A new one requires revoking the old one.
-- Staged publishing also requires the package to exist, so stage-only does not solve this.
+- npm documents that staged publishing also requires the package to exist. The stub observed below may mean otherwise for a version staged by a maintainer (V11).
 
 Applies only to brand-new packages. A customer onboarding an existing package skips this.
 
@@ -34,6 +34,9 @@ The placeholder reads `unregistered` in `verify`; that is correct and expected. 
 - Runner refuses to publish if the package does not exist on npm (no implicit creation).
 - The gate refuses at submit and at approval any version already on npm (`version_exists`). This covers the placeholder whatever version the maintainer chose. Without it, an approved release reusing that version would reach the runner, find different bytes on npm and raise a false `integrity_mismatch` bypass alert.
 
-## To confirm
-- On throwaway packages: placeholder published by hand, trust bound, then the runner publishes the next version.
-- `npm view <pkg> dist-tags` right after the placeholder publish: whether `latest` points at it.
+## Confirmed
+- A placeholder published by hand with `--tag placeholder` also becomes `latest` ([spec.md](spec.md) §17, V7).
+- After the placeholder and the trust binding, the trusted workflow publishes the next version.
+
+## Open
+- npm creates a stub version `0.0.0-stage` (`"stub": true`, description "Temporary package placeholder for staged publishing") under the maintainer's account when a version is staged for a new package. If staging the first real version by hand creates the package, the README-only placeholder above can be dropped (V11).

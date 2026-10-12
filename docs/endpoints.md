@@ -68,7 +68,7 @@ Errors: `404 release_not_found`; `409 release_claimed` (`detail.run_id_claimed` 
   "publish": { "state": "dispatched", "runner_run_id": "18234567890" },
   "record": {
     "envelope": "<base64 of the signed envelope's exact RFC 8785 UTF-8 bytes>",
-    "signature": "0x<65-byte secp256k1 r||s||v>"
+    "signature": "0x<65-byte secp256k1 r||s||v, v = 27 or 28>"
   }
 }
 ```
@@ -97,7 +97,7 @@ The signed envelope, decoded:
 
 The runner verifies, in order, and fails `record_invalid` on any step unless noted:
 1. Decode `envelope`. The bytes must be RFC 8785 canonical: re-serialising the parsed JSON gives the same bytes.
-2. `digest = SHA-256(envelope bytes)`. Recover the address from `signature` over the raw 32-byte digest (no Ethereum message prefix). It must equal `payload.role_key_address`.
+2. `digest = SHA-256(envelope bytes)`. Recover the public key from `signature` over the raw 32-byte digest (no Ethereum message prefix; `v` is 27 or 28), and the address as the last 20 bytes of its Keccak-256. It must equal `payload.role_key_address`.
 3. `format` is `coderoot-signed-release-record-v1` and `payload.format` is `coderoot-release-record-v1`.
 4. `payload.release_id` equals the `release_id` in the path, and `payload.org_id` is present.
 5. `payload.artifact.registry` is `npm`; `artifact.version` is an exact semver version, never a range or tag.

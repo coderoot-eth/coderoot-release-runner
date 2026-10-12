@@ -227,11 +227,11 @@ Who builds is decided after this spec. Split by side:
 | V2 | A non-main branch run cannot publish | Confirmed: GitHub refused the branch run before its first step (environment branch rule); a run with no environment was refused by npm (`ENEEDAUTH`) |
 | V3 | "Disallow tokens" refuses an old token while trusted publishing works | Trusted publishing with "Require 2FA and disallow tokens" confirmed. Old-token refusal: open, npm check run 5 |
 | V4 | Stage-only refuses direct publish; staged + 2FA approve works; provenance on staged versions | Confirmed: direct publish refused (`E403 OIDC permission denied for this action`); a staged version approved with 2FA is published by the trusted publisher with an SLSA provenance attestation, and npm records the approving maintainer (`_npmUser.approver`) |
-| V5 | Record format matches the gate's implementation | Fields and canonical bytes confirmed against an unsigned test vector ([endpoints.md](endpoints.md) §3). Open: a signed vector that includes `org_id`, for the signature check |
+| V5 | Record format matches the gate's implementation | Confirmed against a signed test vector from the gate: canonical envelope bytes, SHA-256 digest, secp256k1 recovery to `role_key_address`, `org_id` binding and the signer-list check all pass ([endpoints.md](endpoints.md) §3). A changed payload byte, a swapped `org_id`, a wrapper `org_id` that differs from the payload, and non-canonical bytes are each refused |
 | V6 | Endpoints §5 and pinned signers §6 accepted | Open: gate owner review |
 | V7 | Where `latest` points after the placeholder publish | Confirmed: a placeholder published with `--tag placeholder` also becomes `latest` |
 | V8 | Gate submit and approval refuse a version already on npm (`version_exists`) | Open: gate owner. This changes the gate's submit API contract, which needs the same addition |
-| V9 | The signed payload identifies the org | Confirmed by the gate owner: the payload carries `org_id`. Its exact form is checked with the signed vector (V5) |
+| V9 | The signed payload identifies the org | Confirmed: the payload carries `org_id`, checked with the signed vector (V5) |
 | V10 | A restricted (private) scoped package publishes through trusted publishing with provenance off | Open: npm check run 8. If it works, provenance is on for public packages and off for private ones (§9, G11); if not, private packages are out of v1 (§1) |
 
 ## 18. Sign-off

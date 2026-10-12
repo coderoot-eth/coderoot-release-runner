@@ -124,7 +124,7 @@ The repo is public, so anyone can read its run list, run logs, workflow inputs, 
 - `signers.json` holds only opaque `org_id`s and role-key addresses, which are already public as EAS attesters.
 
 ## 9. Provenance
-On. The statement names `coderoot-eth/coderoot-release-runner` and `release.yml` as the build source. The customer's source repo and commit stay in the record and the bundle.
+On for every v1 publish. The statement names `coderoot-eth/coderoot-release-runner` and `release.yml` as the build source. The customer's source repo and commit stay in the record and the bundle.
 
 ## 10. Stage-only option (decision: gate owner)
 npm can restrict trust to staging (`--allow-stage-publish`); the runner stages and a package maintainer approves with 2FA.
@@ -234,7 +234,7 @@ Who builds is decided after this spec. Split by side:
 | V7 | Where `latest` points after the placeholder publish | Confirmed: a placeholder published with `--tag placeholder` also becomes `latest` |
 | V8 | Gate submit and approval refuse a version already on npm (`version_exists`) | Open: gate owner. This changes the gate's submit API contract, which needs the same addition |
 | V9 | The signed payload identifies the org | Confirmed: the payload carries `org_id`, checked with the signed vector (V5) |
-| V10 | A restricted (private) scoped package publishes through trusted publishing with provenance off | Publish confirmed: a restricted scoped package published from its trusted environment with `--access restricted` and no provenance. Open decision: an anonymous registry read of a restricted package returns 404, so the registry reads the flow depends on (version exists G1/G2, `package_missing`, the tag rule G10, the integrity read after publish G16, the gate's own npm check) need a read credential. Closed: private packages are out of v1 and the gate holds no customer npm credential (§1) |
+| V10 | A restricted (private) scoped package publishes through trusted publishing with provenance off | Closed: private packages are out of v1 (§1). The publish itself works, but anonymous registry reads of a restricted package return 404, so the flow's registry checks would need a customer credential, which the gate does not hold |
 | V11 | Staging the first version of a new package creates it, so the hand-published placeholder can be dropped | Closed, no: the `0.0.0-stage` stub appeared on a plain first `npm publish` with no staging. The placeholder step stays ([first-publish.md](first-publish.md)) |
 
 ## 18. Sign-off

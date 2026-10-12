@@ -233,7 +233,7 @@ Who builds is decided after this spec. Split by side:
 | V8 | Gate submit and approval refuse a version already on npm (`version_exists`) | Open: gate owner. This changes the gate's submit API contract, which needs the same addition |
 | V9 | The signed payload identifies the org | Confirmed: the payload carries `org_id`, checked with the signed vector (V5) |
 | V10 | A restricted (private) scoped package publishes through trusted publishing with provenance off | Publish confirmed: a restricted scoped package published from its trusted environment with `--access restricted` and no provenance. Open decision: an anonymous registry read of a restricted package returns 404, so the registry reads the flow depends on (version exists G1/G2, `package_missing`, the tag rule G10, the integrity read after publish G16, the gate's own npm check) need a read credential. Either private packages are out of v1 (§1), or the gate holds a read-only credential per customer for those reads |
-| V11 | Staging the first version of a new package creates it, so the hand-published placeholder can be dropped | Open. Observed: npm created a stub version `0.0.0-stage` (`"stub": true`, "Temporary package placeholder for staged publishing") under the maintainer's account when the test packages were set up ([first-publish.md](first-publish.md)) |
+| V11 | Staging the first version of a new package creates it, so the hand-published placeholder can be dropped | Closed, no: the `0.0.0-stage` stub appeared on a plain first `npm publish` with no staging. The placeholder step stays ([first-publish.md](first-publish.md)) |
 
 ## 18. Sign-off
 Countersigned by: ____________ Date: ________

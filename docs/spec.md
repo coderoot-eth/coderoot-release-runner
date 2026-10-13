@@ -1,5 +1,7 @@
 # Release Runner: Specification
 
+**Parked:** this is the premium path, where CodeRoot holds a customer's npm publish path. It is built when a customer needs it. Until then, publishers release on npm themselves and submit the release to CodeRoot for attestation.
+
 **Status:** review draft. Final after the checks in §17 pass and the gate owner signs.
 
 ## 1. Purpose and scope

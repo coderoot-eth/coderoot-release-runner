@@ -1,5 +1,7 @@
 # Release runner documentation
 
+**Parked:** this is the premium path, where CodeRoot holds a customer's npm publish path. It is built when a customer needs it. Until then, publishers release on npm themselves and submit the release to CodeRoot for attestation.
+
 The release runner is the only identity allowed to publish a customer's npm package. It publishes exactly the bytes a human approved, under the approved name and version.
 
 | Document | Contents |

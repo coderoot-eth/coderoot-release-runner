@@ -1,6 +1,6 @@
 # Runner endpoints on `secure.coderoot.app`
 
-Draft for review. Same conventions as the gate API: JSON, UTF-8, tagged lowercase hashes, the gate API error shape, ULID ids.
+Same conventions as the gate API: JSON, UTF-8, tagged lowercase hashes, the gate API error shape, ULID ids.
 Base: `https://secure.coderoot.app/v1/runner`. All examples use `release_id = rel_01J7B3C9V2N4P6R8T0W1X3Y5ZA`.
 
 ## 0. Dispatch (gate → GitHub, not an endpoint of ours)

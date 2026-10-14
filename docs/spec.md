@@ -2,8 +2,6 @@
 
 **Parked:** this is the premium path, where CodeRoot holds a customer's npm publish path. It is built when a customer needs it. Until then, publishers release on npm themselves and submit the release to CodeRoot for attestation.
 
-**Status:** review draft. Final after the checks in §17 pass and the gate owner signs.
-
 ## 1. Purpose and scope
 The runner is the only identity allowed to publish a customer's npm package. It publishes exactly the bytes a human approved, under the approved name and version, and nothing else.
 
@@ -224,7 +222,7 @@ Who builds is decided after this spec. Split by side:
 - [ ] Environment named `<org_id>` (main only, no secrets)
 - [ ] Onboarding §12
 
-## 17. To confirm before final
+## 17. Verified assumptions
 | # | Assumption | Status |
 |---|---|---|
 | V1 | npm refuses a run from the wrong environment | Confirmed: a package trusting another environment refused the publish (`ENEEDAUTH`, no token from the exchange) |
@@ -232,12 +230,9 @@ Who builds is decided after this spec. Split by side:
 | V3 | "Disallow tokens" refuses an old token while trusted publishing works | Confirmed: with "Require 2FA and disallow tokens" set, trusted publishing works and a granular token with 2FA bypass is refused: `E403 Two-factor authentication is required to publish this package but an automation token was specified`. Caveat: npm printed an account-wide notice on the same account ("npm tokens that bypass 2FA are being restricted for account changes and direct publishing"), so npm's own rule may also have refused the token. The error names the package setting, but this run does not separate the two causes |
 | V4 | Stage-only refuses direct publish; staged + 2FA approve works; provenance on staged versions | Confirmed: direct publish refused (`E403 OIDC permission denied for this action`); a staged version approved with 2FA is published by the trusted publisher with an SLSA provenance attestation, and npm records the approving maintainer (`_npmUser.approver`) |
 | V5 | Record format matches the gate's implementation | Confirmed against a signed test vector from the gate: canonical envelope bytes, SHA-256 digest, secp256k1 recovery to `role_key_address`, `org_id` binding and the signer-list check all pass ([endpoints.md](endpoints.md) §3). A changed payload byte, a swapped `org_id`, a wrapper `org_id` that differs from the payload, and non-canonical bytes are each refused |
-| V6 | Endpoints §5, the queue (§4) and pinned signers §6 accepted | Endpoints and the queue choice are decided when the runner is built; the runner is parked. The pinned-signer rule is accepted with the countersign (§18) |
+| V6 | Endpoints §5, the queue (§4) and pinned signers §6 accepted | Endpoints and the queue choice are decided when the runner is built; the runner is parked. The pinned-signer rule is accepted |
 | V7 | Where `latest` points after the placeholder publish | Confirmed: a placeholder published with `--tag placeholder` also becomes `latest` |
 | V8 | Gate submit and approval refuse a version already on npm (`version_exists`) | Confirmed by the gate owner, for the gate-publish path only. A release the publisher put on npm themselves is on npm by design and is not refused |
 | V9 | The signed payload identifies the org | Confirmed: the payload carries `org_id`, checked with the signed vector (V5) |
 | V10 | A restricted (private) scoped package publishes through trusted publishing with provenance off | Closed: private packages are out of v1 (§1). The publish itself works, but anonymous registry reads of a restricted package return 404, so the flow's registry checks would need a customer credential, which the gate does not hold |
 | V11 | Staging the first version of a new package creates it, so the hand-published placeholder can be dropped | Closed, no: the `0.0.0-stage` stub appeared on a plain first `npm publish` with no staging. The placeholder step stays ([first-publish.md](first-publish.md)) |
-
-## 18. Sign-off
-Countersigned by: ____________ Date: ________

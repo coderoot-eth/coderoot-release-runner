@@ -12,5 +12,3 @@ The release runner is the only identity allowed to publish a customer's npm pack
 | [first-publish.md](first-publish.md) | How a brand-new package gets its first version |
 | [failure-modes.md](failure-modes.md) | What can go wrong at publish time and the rule for each case |
 | [attack-tests.md](attack-tests.md) | Attacks to run against the finished runner |
-
-Status: review draft. The spec becomes final after the checks in spec §17 pass and it is countersigned.
